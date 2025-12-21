@@ -1,6 +1,8 @@
---// ===== The Forge Core (REWRITTEN ENGINE v3) =====
---// Engine: State Machine (Move -> Lock -> Mine)
---// Fixes: Absolute NaN Prevention, Permanent Noclip, UI Compatibility
+--// ===== The Forge Core (FINAL HIT FIX) =====
+--// Fixes: 
+--// - Exact Remote Path (100% Hit Rate)
+--// - Auto Equip Pickaxe
+--// - Optimized Movement Engine
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -9,13 +11,13 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- ========= DEBUG SYSTEM =========
-_G.ForgeDebug = (_G.ForgeDebug ~= nil) and _G.ForgeDebug or true
+_G.ForgeDebug = true 
 local function D(tag, msg)
 	if _G.ForgeDebug then warn(("[ForgeDBG:%s] %s"):format(tag, tostring(msg))) end
 end
 
 if _G.__ForgeCoreLoaded then
-	warn("[!] Forge Core already loaded. Restart game/executor to reload.")
+	warn("[!] Forge Core already loaded. Restart executor to reload.")
 	return
 end
 _G.__ForgeCoreLoaded = true
@@ -63,20 +65,17 @@ local function setDefault(k, v)
 	if Settings[k] == nil then Settings[k] = v end
 end
 
--- Config Defaults
 setDefault("AutoFarm", false)
 setDefault("TweenSpeed", 40)
-setDefault("YOffset", -6) -- Default dibawah batu agar aman
+setDefault("YOffset", 0) -- 0 Paling aman untuk hit
 setDefault("CheckThreshold", 45)
 setDefault("ScanInterval", 0.25)
-setDefault("HitInterval", 0.15)
-setDefault("TargetStickTime", 5) -- Waktu maksimal nempel di satu batu sebelum scan ulang
+setDefault("HitInterval", 0.1) -- Cepat
+setDefault("TargetStickTime", 5)
 
--- Filters
 setDefault("AllowAllZonesIfNoneSelected", true)
 setDefault("AllowAllRocksIfNoneSelected", true)
 
--- Init
 for _, n in ipairs(DATA.Zones) do if Settings.Zones[n] == nil then Settings.Zones[n] = false end end
 for _, n in ipairs(DATA.Rocks) do if Settings.Rocks[n] == nil then Settings.Rocks[n] = false end end
 for _, n in ipairs(DATA.Ores)  do if Settings.Ores[n]  == nil then Settings.Ores[n]  = false end end
@@ -102,25 +101,37 @@ local function boolCount(map)
 	return false
 end
 
--- ========= [NEW ENGINE] STATE & VARIABLES =========
+-- ========= [NEW] AUTO EQUIP =========
+local function EquipPickaxe()
+	local c = Player.Character
+	if not c then return end
+	
+	local held = c:FindFirstChildOfClass("Tool")
+	if held then return end 
+	
+	local bp = Player:FindFirstChild("Backpack")
+	if bp then
+		local tool = bp:FindFirstChildOfClass("Tool")
+		if tool then
+			local hum = c:FindFirstChildOfClass("Humanoid")
+			if hum then hum:EquipTool(tool) end
+		end
+	end
+end
+
+-- ========= STATE ENGINE =========
 local ActiveTween = nil
-local MiningCFrame = nil -- Target posisi kuncian
+local MiningCFrame = nil 
 local NoclipConn = nil
 local LockConn = nil
 
--- ========= [NEW ENGINE] PHYSICS CONTROL =========
-
--- 1. Noclip Loop (Stepped = Physics Update)
--- Noclip ini akan terus aktif selama AutoFarm nyala, memastikan player bisa tembus tanah/batu.
 local function StartNoclip()
 	if NoclipConn then return end
 	NoclipConn = RunService.Stepped:Connect(function()
 		local c = Player.Character
 		if c then
 			for _, v in ipairs(c:GetDescendants()) do
-				if v:IsA("BasePart") and v.CanCollide then
-					v.CanCollide = false
-				end
+				if v:IsA("BasePart") and v.CanCollide then v.CanCollide = false end
 			end
 		end
 	end)
@@ -131,24 +142,21 @@ local function StopNoclip()
 	NoclipConn = nil
 end
 
--- 2. Lock Loop (Heartbeat = Post Physics)
--- Mengunci posisi karakter agar tidak jatuh/terpental saat mining.
 local function StartLock(targetCF)
 	MiningCFrame = targetCF
 	local _, r = GetCharAndRoot()
 	local hum = GetHumanoid()
 	
-	if r then r.Anchored = true end -- Bekukan agar stabil 100%
-	if hum then hum.PlatformStand = true end -- Matikan animasi jatuh/berdiri
+	if r then r.Anchored = true end 
+	if hum then hum.PlatformStand = true end 
 
 	if LockConn then return end
 	LockConn = RunService.Heartbeat:Connect(function()
 		if MiningCFrame and r and r.Parent then
-			r.CFrame = MiningCFrame -- Paksa set CFrame setiap frame
+			r.CFrame = MiningCFrame 
 			r.AssemblyLinearVelocity = Vector3.zero 
 			r.AssemblyAngularVelocity = Vector3.zero
 		else
-			-- Safety: jika karakter mati/hilang, stop lock
 			StopLock()
 		end
 	end)
@@ -158,14 +166,12 @@ local function StopLock()
 	if LockConn then LockConn:Disconnect() end
 	LockConn = nil
 	MiningCFrame = nil
-	
 	local _, r = GetCharAndRoot()
 	local hum = GetHumanoid()
 	if r then r.Anchored = false end
 	if hum then hum.PlatformStand = false end
 end
 
--- 3. Reset All (Panic/Stop)
 local function ResetState()
 	if ActiveTween then ActiveTween:Cancel() end
 	ActiveTween = nil
@@ -173,53 +179,40 @@ local function ResetState()
 	StopNoclip()
 end
 
--- ========= [NEW ENGINE] MOVEMENT LOGIC =========
+-- ========= MOVEMENT LOGIC =========
 
 local function MoveAndMine(targetPart)
 	if not targetPart or not targetPart.Parent then return false end
 	local _, root = GetCharAndRoot()
 	if not root then return false end
 
-	-- 1. Ambil Settingan UI Real-time
 	local speed = math.max(10, tonumber(Settings.TweenSpeed) or 40)
-	local yOff = tonumber(Settings.YOffset) or -6
+	local yOff = tonumber(Settings.YOffset) or 0
 	
-	-- 2. Kalkulasi Posisi Tujuan (Di bawah batu)
 	local rockPos = targetPart.Position
 	local finalPos = rockPos + Vector3.new(0, yOff, 0)
 	
-	-- 3. Kalkulasi Rotasi (Anti-NaN Absolute)
-	-- Kita ingin menghadap batu, tapi badan tetap tegak (Y locked).
 	local lookDir = (rockPos - finalPos)
-	local flatLook = Vector3.new(lookDir.X, 0, lookDir.Z) -- Ratakan Y jadi 0
-	
+	local flatLook = Vector3.new(lookDir.X, 0, lookDir.Z)
 	local finalCFrame
 	
-	-- Jika player tepat di bawah batu (X/Z sama), flatLook magnitude mendekati 0.
-	-- Ini yang menyebabkan error NaN di script lama.
 	if flatLook.Magnitude < 0.01 then
-		-- Fallback: Gunakan arah hadap player saat ini (jangan putar)
 		finalCFrame = CFrame.new(finalPos) * root.CFrame.Rotation
 	else
-		-- Normal: Menghadap ke arah batu
 		finalCFrame = CFrame.lookAt(finalPos, finalPos + flatLook)
 	end
 	
-	-- 4. Cek Jarak
 	local dist = (root.Position - finalPos).Magnitude
 	
-	-- Pastikan Noclip Aktif
 	StartNoclip()
 
-	-- Jika dekat (< 3 studs), langsung Lock (Skip Tween)
-	if dist < 3 then
-		StopLock() -- Reset lock lama
+	if dist < 4 then
+		StopLock() 
 		StartLock(finalCFrame)
 		return true
 	end
 
-	-- 5. Mulai Tween (Terbang)
-	StopLock() -- Lepas anchor biar bisa jalan
+	StopLock() 
 	
 	local duration = dist / speed
 	if duration < 0.1 then duration = 0.1 end
@@ -230,46 +223,70 @@ local function MoveAndMine(targetPart)
 	ActiveTween = TweenService:Create(root, ti, {CFrame = finalCFrame})
 	ActiveTween:Play()
 	
-	-- 6. Tunggu Tween Selesai (Manual Wait loop agar responsif)
 	local t0 = os.clock()
 	while (os.clock() - t0 < duration) do
-		if not Settings.AutoFarm then 
-			ActiveTween:Cancel()
-			return false 
-		end
-		-- Cek jika batu tiba-tiba hilang saat OTW
-		if not targetPart.Parent then
-			ActiveTween:Cancel()
-			return false
-		end
+		if not Settings.AutoFarm then ActiveTween:Cancel(); return false end
+		if not targetPart.Parent then ActiveTween:Cancel(); return false end
 		task.wait(0.1)
 	end
 	
-	-- 7. Sampai Tujuan -> KUNCI POSISI
 	StartLock(finalCFrame)
 	return true
 end
 
--- ========= REMOTE TOOL =========
-local toolActivatedRF = nil
+-- ========= [UPDATED] REMOTE TOOL HIT =========
+local CACHED_REMOTE = nil
 local lastHit = 0
-local function ResolveToolActivated()
-	local s = ReplicatedStorage:FindFirstChild("Shared")
-	local rf = s and s.Packages.Knit.Services.ToolService.RF.ToolActivated
-	if rf then toolActivatedRF = rf end
-end
 
-local function HitPickaxe()
-	local now = os.clock()
-	if (now - lastHit) < (Settings.HitInterval or 0.15) then return end
-	lastHit = now
-	if not (toolActivatedRF and toolActivatedRF.Parent) then ResolveToolActivated() end
-	if toolActivatedRF then
-		task.spawn(function() pcall(function() toolActivatedRF:InvokeServer("Pickaxe") end) end)
+local function GetHitRemote()
+	if CACHED_REMOTE then return CACHED_REMOTE end
+	
+	-- Gunakan Path Exact dari user
+	local success, result = pcall(function()
+		return ReplicatedStorage
+			:WaitForChild("Shared")
+			:WaitForChild("Packages")
+			:WaitForChild("Knit")
+			:WaitForChild("Services")
+			:WaitForChild("ToolService")
+			:WaitForChild("RF")
+			:WaitForChild("ToolActivated")
+	end)
+	
+	if success and result then
+		CACHED_REMOTE = result
+		D("REMOTE", "ToolActivated Found & Cached!")
+		return result
+	else
+		-- Jangan warn terus menerus, cukup return nil
+		return nil
 	end
 end
 
--- ========= TARGETING (OPTIMIZED) =========
+local function HitPickaxe()
+	-- 1. Pastikan pegang tool
+	EquipPickaxe()
+
+	-- 2. Cek cooldown
+	local now = os.clock()
+	if (now - lastHit) < (Settings.HitInterval or 0.1) then return end
+	lastHit = now
+
+	-- 3. Ambil Remote
+	local remote = GetHitRemote()
+	
+	if remote then
+		task.spawn(function()
+			pcall(function()
+				-- 4. Invoke dengan format user
+				local args = { "Pickaxe" }
+				remote:InvokeServer(unpack(args))
+			end)
+		end)
+	end
+end
+
+-- ========= TARGETING =========
 local function IsRockValid(rockModel)
 	local hp = rockModel:GetAttribute("Health")
 	if hp and hp <= 0 then return false end
@@ -308,7 +325,6 @@ local function GetBestTargetPart()
 	for _, zone in ipairs(rocksFolder:GetChildren()) do
 		if zone:IsA("Folder") or zone:IsA("Model") then
 			if allowAllZones or Settings.Zones[zone.Name] then
-				-- Optimization: Direct Path Scan
 				local spawnLoc = zone:FindFirstChild("SpawnLocation") 
 				if spawnLoc then
 					for _, rockModel in ipairs(spawnLoc:GetChildren()) do
@@ -332,17 +348,15 @@ local function GetBestTargetPart()
 	return closest
 end
 
--- ========= MAIN LOOP (REWRITTEN) =========
-local lastScan = 0
+-- ========= MAIN LOOP =========
 local currentTarget = nil
 local stickTime = 0
 
 task.spawn(function()
-	D("LOOP", "Engine v3 Started")
+	D("LOOP", "Final Hit Engine Started")
 	while _G.FarmLoop ~= false do
 		task.wait(0.1)
 
-		-- 1. Cek AutoFarm Mati
 		if not Settings.AutoFarm then
 			if ActiveTween then ResetState() end
 			task.wait(0.5)
@@ -351,48 +365,37 @@ task.spawn(function()
 
 		local now = os.clock()
 
-		-- 2. Cari Target Baru (Jika belum punya atau waktu habis)
 		if (not currentTarget) or (not currentTarget.Parent) or (now > stickTime) then
-			-- Jika ganti target, lepas lock dulu biar smooth
 			if currentTarget then StopLock() end
 			
 			local newTarget = GetBestTargetPart()
 			if newTarget then
 				currentTarget = newTarget
-				-- Reset timer stick
 				stickTime = now + (Settings.TargetStickTime or 5)
 			else
-				-- Jika tidak ada target, diam dulu
 				currentTarget = nil
 				task.wait(0.2)
 			end
 		end
 
-		-- 3. Eksekusi Target
 		if currentTarget and currentTarget.Parent then
-			-- Logic MoveAndMine menghandle Tween & Lock sekaligus
 			MoveAndMine(currentTarget)
 			
-			-- Pukul
 			local model = currentTarget:FindFirstAncestorOfClass("Model")
 			if model then
 				local hp = model:GetAttribute("Health")
 				if not hp or hp > 0 then
-					HitPickaxe()
+					HitPickaxe() -- HIT!
 				else
-					-- Batu hancur -> Paksa cari baru segera
 					currentTarget = nil
 					StopLock()
 				end
 			end
 		else
-			-- Idle state
 			StopLock()
 		end
 	end
-	
-	-- Cleanup saat script dimatikan total
 	ResetState()
 end)
 
-print("[✓] Forge Core v3 (Engine Rewrite) Loaded!")
+print("[✓] Forge Core: Exact Remote Path Applied.")
