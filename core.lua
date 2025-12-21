@@ -1,8 +1,9 @@
---// ===== The Forge Core (FINAL HIT FIX) =====
+--// ===== The Forge Core (FULL AIM ROTATION) =====
 --// Fixes: 
---// - Exact Remote Path (100% Hit Rate)
---// - Auto Equip Pickaxe
---// - Optimized Movement Engine
+--// - Full 3D Rotation (Pitch + Yaw) -> Character looks UP at rock
+--// - Exact Remote Path
+--// - Auto Equip
+--// - Permanent Noclip
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -67,10 +68,10 @@ end
 
 setDefault("AutoFarm", false)
 setDefault("TweenSpeed", 40)
-setDefault("YOffset", 0) -- 0 Paling aman untuk hit
+setDefault("YOffset", -6) -- Default di bawah batu (karena sekarang sudah bisa mendongak)
 setDefault("CheckThreshold", 45)
 setDefault("ScanInterval", 0.25)
-setDefault("HitInterval", 0.1) -- Cepat
+setDefault("HitInterval", 0.1) 
 setDefault("TargetStickTime", 5)
 
 setDefault("AllowAllZonesIfNoneSelected", true)
@@ -101,7 +102,7 @@ local function boolCount(map)
 	return false
 end
 
--- ========= [NEW] AUTO EQUIP =========
+-- ========= AUTO EQUIP =========
 local function EquipPickaxe()
 	local c = Player.Character
 	if not c then return end
@@ -179,7 +180,7 @@ local function ResetState()
 	StopNoclip()
 end
 
--- ========= MOVEMENT LOGIC =========
+-- ========= MOVEMENT LOGIC (FULL AIM ROTATION) =========
 
 local function MoveAndMine(targetPart)
 	if not targetPart or not targetPart.Parent then return false end
@@ -187,25 +188,29 @@ local function MoveAndMine(targetPart)
 	if not root then return false end
 
 	local speed = math.max(10, tonumber(Settings.TweenSpeed) or 40)
-	local yOff = tonumber(Settings.YOffset) or 0
+	local yOff = tonumber(Settings.YOffset) or -6 -- Bisa diset minus sekarang
 	
 	local rockPos = targetPart.Position
 	local finalPos = rockPos + Vector3.new(0, yOff, 0)
 	
+	-- [UPDATED LOGIC] Full 3D LookAt
+	-- Ini akan membuat karakter mendongak/menunduk langsung ke pusat batu
 	local lookDir = (rockPos - finalPos)
-	local flatLook = Vector3.new(lookDir.X, 0, lookDir.Z)
 	local finalCFrame
 	
-	if flatLook.Magnitude < 0.01 then
+	-- Anti-NaN check: Jika posisi sama persis (jarak < 0.01), pakai rotasi lama
+	if lookDir.Magnitude < 0.01 then
 		finalCFrame = CFrame.new(finalPos) * root.CFrame.Rotation
 	else
-		finalCFrame = CFrame.lookAt(finalPos, finalPos + flatLook)
+		-- Point directly at rockPos (Pitch + Yaw)
+		finalCFrame = CFrame.lookAt(finalPos, rockPos)
 	end
 	
 	local dist = (root.Position - finalPos).Magnitude
 	
 	StartNoclip()
 
+	-- Jika dekat, langsung Lock
 	if dist < 4 then
 		StopLock() 
 		StartLock(finalCFrame)
@@ -234,53 +239,37 @@ local function MoveAndMine(targetPart)
 	return true
 end
 
--- ========= [UPDATED] REMOTE TOOL HIT =========
+-- ========= REMOTE HIT (CACHED) =========
 local CACHED_REMOTE = nil
 local lastHit = 0
 
 local function GetHitRemote()
 	if CACHED_REMOTE then return CACHED_REMOTE end
 	
-	-- Gunakan Path Exact dari user
 	local success, result = pcall(function()
-		return ReplicatedStorage
-			:WaitForChild("Shared")
-			:WaitForChild("Packages")
-			:WaitForChild("Knit")
-			:WaitForChild("Services")
-			:WaitForChild("ToolService")
-			:WaitForChild("RF")
-			:WaitForChild("ToolActivated")
+		return ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated
 	end)
 	
 	if success and result then
 		CACHED_REMOTE = result
-		D("REMOTE", "ToolActivated Found & Cached!")
+		D("REMOTE", "Cached Successfully.")
 		return result
-	else
-		-- Jangan warn terus menerus, cukup return nil
-		return nil
 	end
+	return nil
 end
 
 local function HitPickaxe()
-	-- 1. Pastikan pegang tool
 	EquipPickaxe()
 
-	-- 2. Cek cooldown
 	local now = os.clock()
 	if (now - lastHit) < (Settings.HitInterval or 0.1) then return end
 	lastHit = now
 
-	-- 3. Ambil Remote
 	local remote = GetHitRemote()
-	
 	if remote then
 		task.spawn(function()
 			pcall(function()
-				-- 4. Invoke dengan format user
-				local args = { "Pickaxe" }
-				remote:InvokeServer(unpack(args))
+				remote:InvokeServer("Pickaxe")
 			end)
 		end)
 	end
@@ -353,7 +342,7 @@ local currentTarget = nil
 local stickTime = 0
 
 task.spawn(function()
-	D("LOOP", "Final Hit Engine Started")
+	D("LOOP", "Full Aim Engine Started")
 	while _G.FarmLoop ~= false do
 		task.wait(0.1)
 
@@ -385,7 +374,7 @@ task.spawn(function()
 			if model then
 				local hp = model:GetAttribute("Health")
 				if not hp or hp > 0 then
-					HitPickaxe() -- HIT!
+					HitPickaxe() 
 				else
 					currentTarget = nil
 					StopLock()
@@ -398,4 +387,4 @@ task.spawn(function()
 	ResetState()
 end)
 
-print("[✓] Forge Core: Exact Remote Path Applied.")
+print("[✓] Forge Core: Full Rotation Aim Enabled.")
