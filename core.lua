@@ -1,9 +1,8 @@
---// ===== The Forge Core (FULL AIM ROTATION) =====
---// Fixes: 
---// - Full 3D Rotation (Pitch + Yaw) -> Character looks UP at rock
---// - Exact Remote Path
---// - Auto Equip
---// - Permanent Noclip
+--// ===== The Forge Core (FAST HIT / NO SAFE MODE) =====
+--// Features:
+--// - Ultra Scan (Deteksi batu di folder manapun)
+--// - Full Aim (Menghadap langsung ke batu/mendongak)
+--// - Instant Hit (Tanpa delay tunggu model)
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -68,10 +67,10 @@ end
 
 setDefault("AutoFarm", false)
 setDefault("TweenSpeed", 40)
-setDefault("YOffset", -6) -- Default di bawah batu (karena sekarang sudah bisa mendongak)
+setDefault("YOffset", -6) 
 setDefault("CheckThreshold", 45)
 setDefault("ScanInterval", 0.25)
-setDefault("HitInterval", 0.1) 
+setDefault("HitInterval", 0.1) -- Bisa diset sangat cepat
 setDefault("TargetStickTime", 5)
 
 setDefault("AllowAllZonesIfNoneSelected", true)
@@ -102,14 +101,15 @@ local function boolCount(map)
 	return false
 end
 
--- ========= AUTO EQUIP =========
+-- ========= FAST EQUIP (NO WAIT) =========
 local function EquipPickaxe()
 	local c = Player.Character
 	if not c then return end
 	
-	local held = c:FindFirstChildOfClass("Tool")
-	if held then return end 
+	-- Kalau sudah pegang, selesai
+	if c:FindFirstChildOfClass("Tool") then return end 
 	
+	-- Ambil dari Backpack
 	local bp = Player:FindFirstChild("Backpack")
 	if bp then
 		local tool = bp:FindFirstChildOfClass("Tool")
@@ -180,7 +180,7 @@ local function ResetState()
 	StopNoclip()
 end
 
--- ========= MOVEMENT LOGIC (FULL AIM ROTATION) =========
+-- ========= MOVEMENT LOGIC (FULL AIM) =========
 
 local function MoveAndMine(targetPart)
 	if not targetPart or not targetPart.Parent then return false end
@@ -188,21 +188,18 @@ local function MoveAndMine(targetPart)
 	if not root then return false end
 
 	local speed = math.max(10, tonumber(Settings.TweenSpeed) or 40)
-	local yOff = tonumber(Settings.YOffset) or -6 -- Bisa diset minus sekarang
+	local yOff = tonumber(Settings.YOffset) or -6 
 	
 	local rockPos = targetPart.Position
 	local finalPos = rockPos + Vector3.new(0, yOff, 0)
 	
-	-- [UPDATED LOGIC] Full 3D LookAt
-	-- Ini akan membuat karakter mendongak/menunduk langsung ke pusat batu
 	local lookDir = (rockPos - finalPos)
 	local finalCFrame
 	
-	-- Anti-NaN check: Jika posisi sama persis (jarak < 0.01), pakai rotasi lama
 	if lookDir.Magnitude < 0.01 then
 		finalCFrame = CFrame.new(finalPos) * root.CFrame.Rotation
 	else
-		-- Point directly at rockPos (Pitch + Yaw)
+		-- Full 3D Aim (Pitch/Yaw)
 		finalCFrame = CFrame.lookAt(finalPos, rockPos)
 	end
 	
@@ -210,7 +207,6 @@ local function MoveAndMine(targetPart)
 	
 	StartNoclip()
 
-	-- Jika dekat, langsung Lock
 	if dist < 4 then
 		StopLock() 
 		StartLock(finalCFrame)
@@ -239,27 +235,24 @@ local function MoveAndMine(targetPart)
 	return true
 end
 
--- ========= REMOTE HIT (CACHED) =========
+-- ========= REMOTE HIT (FAST MODE) =========
 local CACHED_REMOTE = nil
 local lastHit = 0
 
 local function GetHitRemote()
 	if CACHED_REMOTE then return CACHED_REMOTE end
-	
 	local success, result = pcall(function()
 		return ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated
 	end)
-	
 	if success and result then
 		CACHED_REMOTE = result
-		D("REMOTE", "Cached Successfully.")
 		return result
 	end
 	return nil
 end
 
 local function HitPickaxe()
-	EquipPickaxe()
+	EquipPickaxe() -- Equip tanpa wait
 
 	local now = os.clock()
 	if (now - lastHit) < (Settings.HitInterval or 0.1) then return end
@@ -275,7 +268,7 @@ local function HitPickaxe()
 	end
 end
 
--- ========= TARGETING =========
+-- ========= TARGETING (ULTRA SCAN) =========
 local function IsRockValid(rockModel)
 	local hp = rockModel:GetAttribute("Health")
 	if hp and hp <= 0 then return false end
@@ -286,6 +279,7 @@ local function IsRockValid(rockModel)
 
 	if pct > (Settings.CheckThreshold or 45) then return true end
 	
+	-- Ore Check
 	for _, c in ipairs(rockModel:GetChildren()) do
 		if c.Name == "Ore" then
 			local t = c:GetAttribute("Ore")
@@ -293,6 +287,38 @@ local function IsRockValid(rockModel)
 		end
 	end
 	return false
+end
+
+-- Scan Helper
+local function ScanForRocksInZone(zoneFolder, allowAllRocks, myPos, currentBest, currentDist)
+	local best = currentBest
+	local minDist = currentDist
+	
+	local function checkItem(item)
+		if item:IsA("Model") and item:GetAttribute("Health") then
+			if (allowAllRocks or Settings.Rocks[item.Name]) and IsRockValid(item) then
+				local pp = item.PrimaryPart or item:FindFirstChild("Hitbox") or item:FindFirstChildWhichIsA("BasePart")
+				if pp then
+					local d = (myPos - pp.Position).Magnitude
+					if d < minDist then
+						minDist = d
+						best = pp
+					end
+				end
+			end
+		end
+	end
+
+	-- Scan Children & 1 Level Deep Subfolders
+	for _, item in ipairs(zoneFolder:GetChildren()) do
+		checkItem(item)
+		if item:IsA("Folder") or (item:IsA("Model") and not item:GetAttribute("Health")) then
+			for _, subItem in ipairs(item:GetChildren()) do
+				checkItem(subItem)
+			end
+		end
+	end
+	return best, minDist
 end
 
 local function GetBestTargetPart()
@@ -314,23 +340,7 @@ local function GetBestTargetPart()
 	for _, zone in ipairs(rocksFolder:GetChildren()) do
 		if zone:IsA("Folder") or zone:IsA("Model") then
 			if allowAllZones or Settings.Zones[zone.Name] then
-				local spawnLoc = zone:FindFirstChild("SpawnLocation") 
-				if spawnLoc then
-					for _, rockModel in ipairs(spawnLoc:GetChildren()) do
-						if rockModel:IsA("Model") then
-							if (allowAllRocks or Settings.Rocks[rockModel.Name]) and IsRockValid(rockModel) then
-								local pp = rockModel.PrimaryPart or rockModel:FindFirstChild("Hitbox") or rockModel:FindFirstChildWhichIsA("BasePart")
-								if pp then
-									local d = (myPos - pp.Position).Magnitude
-									if d < minDist then
-										minDist = d
-										closest = pp
-									end
-								end
-							end
-						end
-					end
-				end
+				closest, minDist = ScanForRocksInZone(zone, allowAllRocks, myPos, closest, minDist)
 			end
 		end
 	end
@@ -342,7 +352,7 @@ local currentTarget = nil
 local stickTime = 0
 
 task.spawn(function()
-	D("LOOP", "Full Aim Engine Started")
+	D("LOOP", "Fast Engine Started")
 	while _G.FarmLoop ~= false do
 		task.wait(0.1)
 
@@ -387,4 +397,4 @@ task.spawn(function()
 	ResetState()
 end)
 
-print("[✓] Forge Core: Full Rotation Aim Enabled.")
+print("[✓] Forge Core: Safe Mode OFF (Fast Hit).")
