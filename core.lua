@@ -1,10 +1,7 @@
---// ===== The Forge Core (FINAL OPTIMIZED) =====
+--// ===== The Forge Core (FINAL FIXED + OPTIMIZED) =====
 --// Target Path: Workspace.Rocks.[Zone].SpawnLocation.[Rock]
---// Features: 
---// - Direct Path Scanning (No GetDescendants lag)
---// - Smart Noclip (Low CPU usage)
---// - Hard Lock + Camera Stabilize + Yaw Rotation
---// - Smart Ore/HP Filter
+--// [FIX APPLIED] Anti-NaN CFrame Math (Prevents console spam/crash)
+--// [FIX APPLIED] Robust Stepped Noclip
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -118,74 +115,34 @@ local function boolCount(map)
 	return false
 end
 
--- ========= [OPTIMIZED] SMART NOCLIP =========
-local noclipConn, descConn
-local partsSet = {}
-local originalCollide = {}
-
-local function cacheCharacterParts(c)
-	table.clear(partsSet)
-	table.clear(originalCollide)
-	if not c then return end
-	for _, inst in ipairs(c:GetDescendants()) do
-		if inst:IsA("BasePart") then
-			partsSet[inst] = true
-			originalCollide[inst] = inst.CanCollide
-		end
-	end
-end
+-- ========= [FIXED] ROBUST NOCLIP =========
+local noclipConn = nil
 
 local function enableNoclip()
 	if noclipConn then return end
-
-	local c = Player.Character
-	cacheCharacterParts(c)
-
-	if descConn then descConn:Disconnect() end
-	if c then
-		descConn = c.DescendantAdded:Connect(function(inst)
-			if inst:IsA("BasePart") then
-				partsSet[inst] = true
-				if originalCollide[inst] == nil then
-					originalCollide[inst] = inst.CanCollide
+	local step = RunService.Stepped -- Gunakan Stepped untuk fisika yang lebih stabil
+	noclipConn = step:Connect(function()
+		local c = Player.Character
+		if c then
+			for _, v in ipairs(c:GetDescendants()) do
+				if v:IsA("BasePart") and v.CanCollide == true then
+					v.CanCollide = false
 				end
-				inst.CanCollide = false
-			end
-		end)
-	end
-
-	local stepSignal = RunService.PreSimulation or RunService.Stepped
-	noclipConn = stepSignal:Connect(function()
-		local c2, r2 = GetCharAndRoot()
-		if not (c2 and r2) then return end
-		-- Optimization: Only write property if value is wrong
-		for part in pairs(partsSet) do
-			if part and part.Parent then
-				if part.CanCollide then part.CanCollide = false end
-			else
-				partsSet[part] = nil
 			end
 		end
 	end)
 end
 
 local function disableNoclip()
-	if noclipConn then noclipConn:Disconnect() end
-	if descConn then descConn:Disconnect() end
-	noclipConn, descConn = nil, nil
-
-	for part, was in pairs(originalCollide) do
-		if part and part.Parent then
-			part.CanCollide = was
-		end
+	if noclipConn then
+		noclipConn:Disconnect()
+		noclipConn = nil
 	end
-	table.clear(partsSet)
-	table.clear(originalCollide)
 end
 
 Player.CharacterAdded:Connect(function() disableNoclip() end)
 
--- ========= [OPTIMIZED] LOCK CONTROLLER =========
+-- ========= LOCK CONTROLLER =========
 local lockConn = nil
 local lockRoot = nil
 local lockCFrame = nil -- Now includes Rotation
@@ -378,48 +335,79 @@ local function GetBestTargetPart()
 	return closest
 end
 
--- ========= MOVEMENT & LOGIC =========
+-- ========= [FIXED] ANTI-NAN TWEEN LOGIC =========
 local activeTween = nil
 
 local function TweenToPart(targetPart)
+	-- 1. Validasi Target
 	if not (targetPart and targetPart.Parent) then return false end
 	local c, r = GetCharAndRoot()
 	if not (c and r and r.Parent) then return false end
 
-	enableNoclip()
-
+	-- 2. Hitung Posisi Tujuan
 	local rockPos = targetPart.Position
 	local yOff = tonumber(Settings.YOffset) or 0
+	
+	-- Pastikan yOff bukan NaN (Safety)
+	if type(yOff) ~= "number" then yOff = 0 end
+	
 	local targetPos = rockPos + Vector3.new(0, yOff, 0)
 
-	-- [ROTATION LOGIC] Look at Rock's X/Z, keep target's Y level
-	-- This prevents looking up/down weirdly, only rotates body
+	-- 3. [FIX UTAMA] Perhitungan Rotasi Anti-NaN
+	-- Kita ingin karakter menghadap batu, TAPI horizontal saja (Y lock).
+	-- Error NaN terjadi jika (rockPos.X == targetPos.X) dan (rockPos.Z == targetPos.Z)
+	
 	local lookPos = Vector3.new(rockPos.X, targetPos.Y, rockPos.Z)
-	local targetCFrame = CFrame.lookAt(targetPos, lookPos)
+	local vecDiff = (lookPos - targetPos)
+	local targetCFrame
+	
+	-- Cek apakah jarak pandang terlalu dekat (hampir 0)
+	if vecDiff.Magnitude < 0.05 then
+		-- Jika posisi sama persis, JANGAN putar badan (pakai rotasi sekarang)
+		-- Ini mencegah CFrame.lookAt meledak jadi NaN
+		targetCFrame = CFrame.new(targetPos) * r.CFrame.Rotation
+	else
+		-- Jika aman, baru gunakan lookAt
+		targetCFrame = CFrame.lookAt(targetPos, lookPos)
+	end
 
+	-- 4. Hitung Durasi & Kecepatan
 	local dist = (r.Position - targetPos).Magnitude
 	local speed = math.max(1, tonumber(Settings.TweenSpeed) or 40)
+	
 	local duration = dist / speed
-	if duration < 0.01 then duration = 0.01 end
+	
+	-- [SAFETY] Durasi tidak boleh 0 atau negatif
+	if duration < 0.1 then duration = 0.1 end
 
+	-- 5. Eksekusi
+	enableNoclip() -- Nyalakan noclip sebelum jalan
 	StopCameraStabilize()
 	StopLock()
 
-	if activeTween then pcall(function() activeTween:Cancel() end) end
+	if activeTween then 
+		pcall(function() activeTween:Cancel() end) 
+		activeTween = nil
+	end
+
 	activeTween = TweenService:Create(
 		r,
 		TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{ CFrame = targetCFrame } -- Tweens position AND rotation
+		{ CFrame = targetCFrame }
 	)
 
 	activeTween:Play()
-	pcall(function() activeTween.Completed:Wait() end)
+	
+	-- Tunggu sampai selesai (dengan safety pcall)
+	local success = pcall(function() activeTween.Completed:Wait() end)
+	
+	if success then
+		-- Hanya kunci jika tween sukses sampai tujuan
+		StartLock(r, targetCFrame)
+		StartCameraStabilize()
+	end
 
-	-- Lock Character at destination
-	StartLock(r, targetCFrame)
-	StartCameraStabilize()
-
-	disableNoclip()
+	disableNoclip() -- Matikan noclip setelah sampai
 	return true
 end
 
@@ -478,4 +466,4 @@ task.spawn(function()
 	if activeTween then pcall(function() activeTween:Cancel() end) end
 end)
 
-print("[✓] Forge Core (Optimized SpawnLocation) Loaded!")
+print("[✓] Forge Core (NaN Fixed & Stabilized) Loaded!")
