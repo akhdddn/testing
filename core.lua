@@ -1,6 +1,12 @@
---// ===== THE FORGE CORE (ULTRA-COMPLETE / NO SUMMARY) =====
---// Status: Final Integration
---// Spesifikasi: -6 Studs Offset, Mendongak (LookAt), Noclip Active, Slider Compatible.
+--// ==========================================================
+--// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION
+--// ==========================================================
+--// Status: FINAL (No Summaries / No Cuts)
+--// Features: 
+--// - Position: -6 Studs (Under Rock) via Settings.YOffset
+--// - Rotation: LookAt (Mendongak ke atas)
+--// - Stability: High-Priority Anti-Shake Camera
+--// - Physics: Constant Noclip & Hard Lock
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -10,7 +16,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local CAMERA_BIND_NAME = "Forge_CameraFollow"
 
--- ========= [1] DATA REPOSITORY (UTUH 100%) =========
+-- ========= [1] DATA REPOSITORY (UTUH) =========
 local DATA = {
 	Zones = {
 		"Island2CaveDanger1","Island2CaveDanger2","Island2CaveDanger3",
@@ -52,7 +58,7 @@ end
 
 setDefault("AutoFarm", false)
 setDefault("TweenSpeed", 40)
-setDefault("YOffset", -6) -- Default -6 studs sesuai permintaan
+setDefault("YOffset", -6) -- Player di bawah batu
 setDefault("CheckThreshold", 45)
 setDefault("ScanInterval", 0.25)
 setDefault("HitInterval", 0.15)
@@ -63,7 +69,7 @@ setDefault("LockToTarget", true)
 setDefault("LockVelocityZero", true)
 setDefault("AnchorDuringLock", true)
 setDefault("CameraStabilize", true)
-setDefault("CameraSmoothAlpha", 1)
+setDefault("CameraSmoothAlpha", 1) -- 1 = Anti guncang total
 setDefault("CameraOffsetWorld", Vector3.new(0, 10, 18))
 
 for _, n in ipairs(DATA.Zones) do if Settings.Zones[n] == nil then Settings.Zones[n] = false end end
@@ -72,7 +78,7 @@ for _, n in ipairs(DATA.Ores)  do if Settings.Ores[n]  == nil then Settings.Ores
 
 if _G.FarmLoop == nil then _G.FarmLoop = true end
 
--- ========= [3] UTILS & PHYSICS (NOCLIP) =========
+-- ========= [3] UTILS & NOCLIP ENGINE =========
 local function GetCharAndRoot()
 	local c = Players.LocalPlayer.Character
 	if not (c and c.Parent) then return nil, nil end
@@ -116,7 +122,11 @@ local function enableNoclip()
 	end
 	noclipConn = RunService.Stepped:Connect(function()
 		for part in pairs(partsSet) do
-			if part and part.Parent then part.CanCollide = false else partsSet[part] = nil end
+			if part and part.Parent then 
+				part.CanCollide = false 
+			else 
+				partsSet[part] = nil 
+			end
 		end
 	end)
 end
@@ -128,9 +138,11 @@ local function disableNoclip()
 	for part, was in pairs(originalCollide) do
 		if part and part.Parent then part.CanCollide = was end
 	end
+	table.clear(partsSet)
+	table.clear(originalCollide)
 end
 
--- ========= [4] LOCK & CAMERA =========
+-- ========= [4] STABLE LOCK & CAMERA =========
 local lockConn, lockRoot, lockCFrame, lockHum
 local prevPlatformStand, prevAutoRotate, prevAnchored
 
@@ -180,17 +192,27 @@ local function StartCameraStabilize()
 	local cam = Workspace.CurrentCamera
 	local _, r = GetCharAndRoot()
 	if not (cam and r) then return end
+	
 	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
+	
+	-- Anti-Guncangan: Priority Camera + 1
 	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function()
 		local _, r2 = GetCharAndRoot()
 		if not r2 then return end
 		cam.CameraType = Enum.CameraType.Scriptable
+		local alpha = tonumber(Settings.CameraSmoothAlpha) or 1
 		local desiredPos = r2.Position + (Settings.CameraOffsetWorld or Vector3.new(0, 10, 18))
-		cam.CFrame = CFrame.new(desiredPos, r2.Position)
+		local desiredCF = CFrame.new(desiredPos, r2.Position)
+		
+		if alpha >= 1 then
+			cam.CFrame = desiredCF
+		else
+			cam.CFrame = cam.CFrame:Lerp(desiredCF, alpha)
+		end
 	end)
 end
 
--- ========= [5] TOOL & TARGETING =========
+-- ========= [5] TOOL & TARGET LOGIC =========
 local toolActivatedRF = nil
 local lastHit = 0
 
@@ -225,9 +247,9 @@ local function GetBestTargetPart()
 	local rocksFolder = Workspace:FindFirstChild("Rocks")
 	if not rocksFolder then return nil end
 	
-	local anyZ, countZ = false, 0
+	local anyZ = false
 	for _, v in pairs(Settings.Zones) do if v then anyZ = true break end end
-	local anyR, countR = false, 0
+	local anyR = false
 	for _, v in pairs(Settings.Rocks) do if v then anyR = true break end end
 
 	local cl, md = nil, math.huge
@@ -247,7 +269,7 @@ local function GetBestTargetPart()
 	return cl
 end
 
--- ========= [6] MOVEMENT (LOOKAT & -6 STUDS) =========
+-- ========= [6] MOVEMENT ENGINE (LOOKAT + OFFSET) =========
 local activeTween = nil
 local function TweenToPart(targetPart)
 	local _, r = GetCharAndRoot()
@@ -255,14 +277,18 @@ local function TweenToPart(targetPart)
 	enableNoclip()
 	
 	local rockPos = targetPart.Position
+	-- Posisi target di bawah batu sesuai Slider YOffset (Default -6)
 	local targetPos = rockPos + Vector3.new(0, tonumber(Settings.YOffset) or -6, 0)
-	local lookAtCF = CFrame.lookAt(targetPos, rockPos) -- MENDONGAK
+	
+	-- MENDONGAK: Badan menghadap ke batu
+	local lookAtCF = CFrame.lookAt(targetPos, rockPos)
 	
 	local speed = math.max(1, tonumber(Settings.TweenSpeed) or 40)
 	local duration = (r.Position - targetPos).Magnitude / speed
 	
 	StopCameraStabilize()
 	StopLock()
+	
 	if activeTween then activeTween:Cancel() end
 	activeTween = TweenService:Create(r, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = lookAtCF})
 	activeTween:Play()
@@ -274,7 +300,7 @@ local function TweenToPart(targetPart)
 	end
 end
 
--- ========= [7] MAIN LOOP =========
+-- ========= [7] MAIN EXECUTION LOOP =========
 task.spawn(function()
 	local lastScan, lockedTarget, lockedUntil = 0, nil, 0
 	while _G.FarmLoop do
@@ -302,6 +328,9 @@ task.spawn(function()
 			disableNoclip()
 		end
 	end
+	StopLock()
+	StopCameraStabilize()
+	disableNoclip()
 end)
 
-print("[✓] FORGE CORE FINAL: 100% COMPLETE & SYNCED.")
+print("[✓] FORGE CORE: FULL INTEGRATION COMPLETE (ANTI-SHAKE + LOOKAT + NOCLIP)")
