@@ -1,8 +1,7 @@
---// ===== The Forge Core (FAST HIT / NO SAFE MODE) =====
---// Features:
---// - Ultra Scan (Deteksi batu di folder manapun)
---// - Full Aim (Menghadap langsung ke batu/mendongak)
---// - Instant Hit (Tanpa delay tunggu model)
+--// ===== The Forge Core (FULL AIM ROTATION + ZONE/ORE FIX) =====
+--// Fixes applied ONLY to Targeting:
+--// - Zone Filter: Recursive Scan (Bisa deteksi batu di folder manapun)
+--// - Ore Filter: Cek Attribute & Child Value
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -70,7 +69,7 @@ setDefault("TweenSpeed", 40)
 setDefault("YOffset", -6) 
 setDefault("CheckThreshold", 45)
 setDefault("ScanInterval", 0.25)
-setDefault("HitInterval", 0.1) -- Bisa diset sangat cepat
+setDefault("HitInterval", 0.1) 
 setDefault("TargetStickTime", 5)
 
 setDefault("AllowAllZonesIfNoneSelected", true)
@@ -101,15 +100,14 @@ local function boolCount(map)
 	return false
 end
 
--- ========= FAST EQUIP (NO WAIT) =========
+-- ========= AUTO EQUIP =========
 local function EquipPickaxe()
 	local c = Player.Character
 	if not c then return end
 	
-	-- Kalau sudah pegang, selesai
-	if c:FindFirstChildOfClass("Tool") then return end 
+	local held = c:FindFirstChildOfClass("Tool")
+	if held then return end 
 	
-	-- Ambil dari Backpack
 	local bp = Player:FindFirstChild("Backpack")
 	if bp then
 		local tool = bp:FindFirstChildOfClass("Tool")
@@ -180,15 +178,14 @@ local function ResetState()
 	StopNoclip()
 end
 
--- ========= MOVEMENT LOGIC (FULL AIM) =========
-
+-- ========= MOVEMENT LOGIC (FULL AIM ROTATION) =========
 local function MoveAndMine(targetPart)
 	if not targetPart or not targetPart.Parent then return false end
 	local _, root = GetCharAndRoot()
 	if not root then return false end
 
 	local speed = math.max(10, tonumber(Settings.TweenSpeed) or 40)
-	local yOff = tonumber(Settings.YOffset) or -6 
+	local yOff = tonumber(Settings.YOffset) or -6
 	
 	local rockPos = targetPart.Position
 	local finalPos = rockPos + Vector3.new(0, yOff, 0)
@@ -199,7 +196,6 @@ local function MoveAndMine(targetPart)
 	if lookDir.Magnitude < 0.01 then
 		finalCFrame = CFrame.new(finalPos) * root.CFrame.Rotation
 	else
-		-- Full 3D Aim (Pitch/Yaw)
 		finalCFrame = CFrame.lookAt(finalPos, rockPos)
 	end
 	
@@ -235,24 +231,27 @@ local function MoveAndMine(targetPart)
 	return true
 end
 
--- ========= REMOTE HIT (FAST MODE) =========
+-- ========= REMOTE HIT =========
 local CACHED_REMOTE = nil
 local lastHit = 0
 
 local function GetHitRemote()
 	if CACHED_REMOTE then return CACHED_REMOTE end
+	
 	local success, result = pcall(function()
 		return ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated
 	end)
+	
 	if success and result then
 		CACHED_REMOTE = result
+		D("REMOTE", "Cached Successfully.")
 		return result
 	end
 	return nil
 end
 
 local function HitPickaxe()
-	EquipPickaxe() -- Equip tanpa wait
+	EquipPickaxe()
 
 	local now = os.clock()
 	if (now - lastHit) < (Settings.HitInterval or 0.1) then return end
@@ -268,7 +267,9 @@ local function HitPickaxe()
 	end
 end
 
--- ========= TARGETING (ULTRA SCAN) =========
+-- ========= TARGETING (FILTER IMPLEMENTATION) =========
+
+-- [FIX 1] IsRockValid: Mendeteksi Ore dengan lebih teliti
 local function IsRockValid(rockModel)
 	local hp = rockModel:GetAttribute("Health")
 	if hp and hp <= 0 then return false end
@@ -277,19 +278,35 @@ local function IsRockValid(rockModel)
 	local curHP = hp or maxHP
 	local pct = (maxHP > 0) and ((curHP / maxHP) * 100) or 100
 
+	-- Kalau HP masih bagus, cek Threshold
 	if pct > (Settings.CheckThreshold or 45) then return true end
 	
-	-- Ore Check
-	for _, c in ipairs(rockModel:GetChildren()) do
-		if c.Name == "Ore" then
-			local t = c:GetAttribute("Ore")
-			if t and Settings.Ores[t] then return true end
+	-- Kalau HP sekarat, cek apakah ada Ore mahal
+	local foundOre = nil
+	
+	-- Cek Attribute Ore
+	local attOre = rockModel:GetAttribute("Ore")
+	if attOre then foundOre = attOre end
+	
+	-- Cek Child Ore (StringValue/AttributeValue)
+	if not foundOre then
+		local child = rockModel:FindFirstChild("Ore")
+		if child then
+			if child:IsA("StringValue") or child:IsA("AttributeValue") then
+				foundOre = child.Value
+			end
 		end
 	end
+	
+	-- Validasi Filter Ore
+	if foundOre and Settings.Ores[foundOre] then
+		return true
+	end
+	
 	return false
 end
 
--- Scan Helper
+-- [FIX 2] Helper Scan Recursive: Menembus folder apapun di dalam Zone
 local function ScanForRocksInZone(zoneFolder, allowAllRocks, myPos, currentBest, currentDist)
 	local best = currentBest
 	local minDist = currentDist
@@ -309,9 +326,10 @@ local function ScanForRocksInZone(zoneFolder, allowAllRocks, myPos, currentBest,
 		end
 	end
 
-	-- Scan Children & 1 Level Deep Subfolders
+	-- Scan Anak Langsung
 	for _, item in ipairs(zoneFolder:GetChildren()) do
 		checkItem(item)
+		-- Scan Sub-folder (SpawnLocation/Spawns/Apapun)
 		if item:IsA("Folder") or (item:IsA("Model") and not item:GetAttribute("Health")) then
 			for _, subItem in ipairs(item:GetChildren()) do
 				checkItem(subItem)
@@ -321,6 +339,7 @@ local function ScanForRocksInZone(zoneFolder, allowAllRocks, myPos, currentBest,
 	return best, minDist
 end
 
+-- [FIX 3] GetBestTargetPart: Menggunakan Scan Recursive
 local function GetBestTargetPart()
 	if not Settings.AutoFarm then return nil end
 	local _, r = GetCharAndRoot()
@@ -340,6 +359,7 @@ local function GetBestTargetPart()
 	for _, zone in ipairs(rocksFolder:GetChildren()) do
 		if zone:IsA("Folder") or zone:IsA("Model") then
 			if allowAllZones or Settings.Zones[zone.Name] then
+				-- PANGGIL SCANNER
 				closest, minDist = ScanForRocksInZone(zone, allowAllRocks, myPos, closest, minDist)
 			end
 		end
@@ -352,7 +372,7 @@ local currentTarget = nil
 local stickTime = 0
 
 task.spawn(function()
-	D("LOOP", "Fast Engine Started")
+	D("LOOP", "Full Aim Engine Started")
 	while _G.FarmLoop ~= false do
 		task.wait(0.1)
 
@@ -397,4 +417,4 @@ task.spawn(function()
 	ResetState()
 end)
 
-print("[✓] Forge Core: Safe Mode OFF (Fast Hit).")
+print("[✓] Forge Core: Filter Zone & Ore Fixed.")
