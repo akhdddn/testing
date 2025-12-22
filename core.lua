@@ -1,11 +1,11 @@
 --// ==========================================================
---// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION
+--// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (FIXED JITTER)
 --// ==========================================================
 --// Status: FINAL (No Summaries / No Cuts)
 --// Features:
 --// - Position: -6 Studs (Under Rock) via Settings.YOffset
 --// - Rotation: LookAt (Mendongak ke atas)
---// - Stability: Default Camera (Custom) + Invisicam while Mining
+--// - Stability: Fixed Jitter via Distance Check (Smart Lock)
 --// - Physics: Constant Noclip & Drift-Checked Hard Lock (PreSimulation)
 
 local Players = game:GetService("Players")
@@ -172,6 +172,15 @@ end
 local function StartLock(rootPart, cf)
 	if not Settings.LockToTarget then StopLock() return end
 
+	-- CHANGE: Prevent re-locking if already connected to same root/logic
+	-- But we need to update CFrame if target changed slightly, so we proceed carefully.
+	
+	if lockConn and lockRoot == rootPart then
+		-- Just update target CFrame without full reset
+		lockCFrame = cf
+		return 
+	end
+
 	lockRoot, lockCFrame = rootPart, cf
 	lockHum = GetHumanoid()
 
@@ -186,7 +195,6 @@ local function StartLock(rootPart, cf)
 			lockRoot.Anchored = true
 		end
 
-		-- Set sekali saat mulai lock
 		lockRoot.CFrame = lockCFrame
 		if Settings.LockVelocityZero then
 			lockRoot.AssemblyLinearVelocity = Vector3.zero
@@ -196,7 +204,6 @@ local function StartLock(rootPart, cf)
 
 	if lockConn then lockConn:Disconnect() end
 
-	-- Drift-check di PreSimulation (lebih konsisten untuk lock daripada Stepped) [page:0]
 	lockConn = RunService.PreSimulation:Connect(function()
 		if not (lockRoot and lockRoot.Parent and lockCFrame) then return end
 
@@ -377,14 +384,29 @@ local function TweenToPart(targetPart)
 	local _, r = GetCharAndRoot()
 	if not (r and targetPart and targetPart.Parent) then return end
 
-	StopLock()
-
 	local rockPos = targetPart.Position
 	local targetPos = rockPos + Vector3.new(0, tonumber(Settings.YOffset) or -6, 0)
 	local lookAtCF = CFrame.lookAt(targetPos, rockPos)
 
+	-- [FIX START]: Distance Check to prevent Jittering
+	-- Jika sudah dekat, jangan StopLock & jangan Tween ulang. Cukup pastikan Lock aktif.
+	local dist = (r.Position - targetPos).Magnitude
+	if dist < 2 then
+		if not lockConn then 
+			StartLock(r, lookAtCF)
+			StartCameraStabilize()
+		else
+			-- Update CFrame target if slightly shifted (e.g. dynamic rock)
+			StartLock(r, lookAtCF) 
+		end
+		return -- Keluar agar tidak terjadi loop Unanchor -> Tween -> Anchor
+	end
+	-- [FIX END]
+
+	StopLock() -- Hanya stop lock jika benar-benar perlu bergerak jauh
+
 	local speed = math.max(1, tonumber(Settings.TweenSpeed) or 40)
-	local duration = (r.Position - targetPos).Magnitude / speed
+	local duration = dist / speed
 
 	if activeTween then activeTween:Cancel() end
 	activeTween = TweenService:Create(r, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = lookAtCF})
@@ -439,4 +461,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: FULL INTEGRATION COMPLETE (ANTI-SHAKE + LOOKAT + NOCLIP)")
+print("[✓] FORGE CORE: FULL INTEGRATION COMPLETE (ANTI-SHAKE FIXED + LOOKAT + NOCLIP)")
