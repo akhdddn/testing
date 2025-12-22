@@ -1,11 +1,11 @@
 --// ==========================================================
---// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (FIXED JITTER)
+--// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (CAMERA FIX)
 --// ==========================================================
---// Status: FINAL (No Summaries / No Cuts)
+--// Status: FINAL (Camera Logic Outside Loop)
 --// Features:
 --// - Position: -6 Studs (Under Rock) via Settings.YOffset
 --// - Rotation: LookAt (Mendongak ke atas)
---// - Stability: Fixed Jitter via Distance Check (Smart Lock)
+--// - Stability: Camera Logic Initialized ONCE (Passive Monitor)
 --// - Physics: Constant Noclip & Drift-Checked Hard Lock (PreSimulation)
 
 local Players = game:GetService("Players")
@@ -172,11 +172,7 @@ end
 local function StartLock(rootPart, cf)
 	if not Settings.LockToTarget then StopLock() return end
 
-	-- CHANGE: Prevent re-locking if already connected to same root/logic
-	-- But we need to update CFrame if target changed slightly, so we proceed carefully.
-	
 	if lockConn and lockRoot == rootPart then
-		-- Just update target CFrame without full reset
 		lockCFrame = cf
 		return 
 	end
@@ -222,7 +218,7 @@ local function StartLock(rootPart, cf)
 	end)
 end
 
--- ========= [6] CAMERA ANTI-GUNCANG (DEFAULT FEEL + INVISICAM) =========
+-- ========= [6] CAMERA ANTI-GUNCANG (PASSIVE MONITOR) =========
 local camApplied = false
 local prevOcclusionMode = nil
 local prevCamType = nil
@@ -230,6 +226,7 @@ local prevCamSubject = nil
 
 local function IsMiningState()
 	if not Settings.AutoFarm then return false end
+	-- Cek apakah Lock aktif
 	return (lockConn ~= nil and lockRoot ~= nil and lockCFrame ~= nil)
 end
 
@@ -265,12 +262,10 @@ local function StartCameraStabilize()
 	prevCamType = cam.CameraType
 	prevCamSubject = cam.CameraSubject
 
-	-- Default feel
 	cam.CameraType = Enum.CameraType.Custom
 	local hum = GetHumanoid()
 	if hum then cam.CameraSubject = hum end
 
-	-- Anti-guncang saat mining: Invisicam only when mining [page:1]
 	if IsMiningState() then
 		pcall(function()
 			plr.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
@@ -292,6 +287,7 @@ local function StartCameraStateManager()
 		local plr = Players.LocalPlayer
 		if not (cam and plr) then return end
 
+		-- Monitor state perubahan secara pasif, tidak dipicu loop farm
 		local mining = IsMiningState()
 		if mining ~= lastMining then
 			lastMining = mining
@@ -388,22 +384,19 @@ local function TweenToPart(targetPart)
 	local targetPos = rockPos + Vector3.new(0, tonumber(Settings.YOffset) or -6, 0)
 	local lookAtCF = CFrame.lookAt(targetPos, rockPos)
 
-	-- [FIX START]: Distance Check to prevent Jittering
-	-- Jika sudah dekat, jangan StopLock & jangan Tween ulang. Cukup pastikan Lock aktif.
 	local dist = (r.Position - targetPos).Magnitude
+	
+	-- Logic: Jika dekat, kunci saja. Tidak perlu urus kamera (kamera urus dirinya sendiri)
 	if dist < 2 then
 		if not lockConn then 
 			StartLock(r, lookAtCF)
-			StartCameraStabilize()
 		else
-			-- Update CFrame target if slightly shifted (e.g. dynamic rock)
 			StartLock(r, lookAtCF) 
 		end
-		return -- Keluar agar tidak terjadi loop Unanchor -> Tween -> Anchor
+		return
 	end
-	-- [FIX END]
 
-	StopLock() -- Hanya stop lock jika benar-benar perlu bergerak jauh
+	StopLock()
 
 	local speed = math.max(1, tonumber(Settings.TweenSpeed) or 40)
 	local duration = dist / speed
@@ -415,20 +408,27 @@ local function TweenToPart(targetPart)
 
 	if Settings.AutoFarm then
 		StartLock(r, lookAtCF)
-		StartCameraStabilize()
+		-- StartCameraStabilize() <-- DIHAPUS (sudah berjalan di luar)
 	end
 end
 
 -- ========= [9] MAIN EXECUTION LOOP =========
 task.spawn(function()
 	local lastScan, lockedTarget, lockedUntil = 0, nil, 0
+	
+	-- [PERBAIKAN] Inisialisasi Kamera DI LUAR Loop
+	if Settings.AutoFarm then
+		StartCameraStabilize()
+		StartCameraStateManager()
+	end
+	
 	while _G.FarmLoop do
 		task.wait(0.05)
 		if Settings.AutoFarm then
 			enableNoclip()
-
-			StartCameraStabilize()
-			StartCameraStateManager()
+			
+			-- StartCameraStabilize() <-- DIHAPUS
+			-- StartCameraStateManager() <-- DIHAPUS
 
 			local _, r = GetCharAndRoot()
 			if r then
@@ -461,4 +461,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: FULL INTEGRATION COMPLETE (ANTI-SHAKE FIXED + LOOKAT + NOCLIP)")
+print("[✓] FORGE CORE: CAMERA LOOP FIXED (PASSIVE STABILIZATION)")
