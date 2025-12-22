@@ -1,11 +1,13 @@
 --// ==========================================================
---// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (GHOST MODE FIX)
+--// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (LOGIC REWORK)
 --// ==========================================================
---// Status: FINAL (Raycast Passthrough Fix)
+--// Status: FINAL (Ownership Logic + Predictive Kill + Path Fix)
+--// Path: Workspace.Rocks.Zone.SpawnLocation.Rock.Ore
 --// Features:
---// - Position: -4 Studs (Under Rock)
---// - Physics: Ghost Mode (CanCollide/Touch/Query = FALSE) -> Fixes "Body Block"
---// - Stability: Camera Logic Initialized ONCE (Passive Monitor)
+--// - Ownership: Respects "LastHitPlayer" (Anti-KillSteal)
+--// - Prediction: Moves immediately when Health <= 0
+--// - Ore Logic: Targets specific Ore Models inside Rock
+--// - Physics: Ghost Mode (CanQuery=False)
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -62,14 +64,10 @@ setDefault("CheckThreshold", 45)
 setDefault("ScanInterval", 0.25)
 setDefault("HitInterval", 0.15)
 setDefault("TargetStickTime", 0.35)
-setDefault("AllowAllZonesIfNoneSelected", true)
-setDefault("AllowAllRocksIfNoneSelected", true)
 setDefault("LockToTarget", true)
 setDefault("LockVelocityZero", true)
 setDefault("AnchorDuringLock", true)
 setDefault("CameraStabilize", true)
-setDefault("CameraSmoothAlpha", 1)
-setDefault("CameraOffsetWorld", Vector3.new(0, 10, 18))
 
 for _, n in ipairs(DATA.Zones) do if Settings.Zones[n] == nil then Settings.Zones[n] = false end end
 for _, n in ipairs(DATA.Rocks) do if Settings.Rocks[n] == nil then Settings.Rocks[n] = false end end
@@ -77,7 +75,7 @@ for _, n in ipairs(DATA.Ores)  do if Settings.Ores[n]  == nil then Settings.Ores
 
 if _G.FarmLoop == nil then _G.FarmLoop = true end
 
--- ========= [3] UTILS =========
+-- ========= [3] UTILS & HELPERS =========
 local function GetCharAndRoot()
 	local c = Players.LocalPlayer.Character
 	if not (c and c.Parent) then return nil, nil end
@@ -90,10 +88,10 @@ local function GetHumanoid()
 	return c and c:FindFirstChildOfClass("Humanoid")
 end
 
--- ========= [4] NOCLIP ENGINE (GHOST MODE: QUERY/TOUCH/COLLIDE) =========
+-- ========= [4] NOCLIP ENGINE (GHOST MODE) =========
 local noclipConn, descConn
 local partsSet = {}
-local originalStates = {} -- Stores {CanCollide, CanTouch, CanQuery}
+local originalStates = {} 
 
 local function cacheCharacterParts(c)
 	table.clear(partsSet)
@@ -123,7 +121,7 @@ local function enableNoclip()
 				partsSet[inst] = true
 				inst.CanCollide = false
 				inst.CanTouch = false
-				inst.CanQuery = false -- [FIX] Invisible to Raycasts
+				inst.CanQuery = false
 			end
 		end)
 	end
@@ -133,7 +131,7 @@ local function enableNoclip()
 			if part and part.Parent then
 				part.CanCollide = false
 				part.CanTouch = false
-				part.CanQuery = false -- [FIX] Force Ghost Mode
+				part.CanQuery = false
 			else
 				partsSet[part] = nil
 			end
@@ -157,7 +155,7 @@ local function disableNoclip()
 	table.clear(originalStates)
 end
 
--- ========= [5] HARD LOCK (PreSimulation Drift-Check) =========
+-- ========= [5] HARD LOCK =========
 local lockConn, lockRoot, lockCFrame, lockHum
 local prevPlatformStand, prevAutoRotate, prevAnchored
 
@@ -183,8 +181,7 @@ end
 local function StartLock(rootPart, cf)
 	if not Settings.LockToTarget then StopLock() return end
 
-	-- [FIX] Force Ghost Mode immediately on Lock Start
-	-- Ensure the body doesn't block the very first hit
+	-- Force Ghost Mode for immediate hit registration
 	for _, v in ipairs(rootPart.Parent:GetDescendants()) do
 		if v:IsA("BasePart") then
 			v.CanCollide = false
@@ -239,7 +236,7 @@ local function StartLock(rootPart, cf)
 	end)
 end
 
--- ========= [6] CAMERA ANTI-GUNCANG (PASSIVE MONITOR) =========
+-- ========= [6] CAMERA (PASSIVE) =========
 local camApplied = false
 local prevOcclusionMode = nil
 local prevCamType = nil
@@ -336,7 +333,7 @@ local function StopCameraStateManager()
 	lastMining = nil
 end
 
--- ========= [7] TOOL & TARGET LOGIC =========
+-- ========= [7] TARGET LOGIC (OWNERSHIP + ORE PREDICTION) =========
 local toolActivatedRF = nil
 local lastHit = 0
 
@@ -354,14 +351,49 @@ local function HitPickaxe()
 	task.spawn(function() pcall(function() toolActivatedRF:InvokeServer("Pickaxe") end) end)
 end
 
-local function IsRockValid(rockModel)
+local function IsRockValid(rockModel, anyOreSelected, anyRockSelected)
+	-- [RULE 1]: OWNERSHIP CHECK (Anti-Steal)
+	-- Jika LastHitPlayer ada isinya DAN bukan kita, berarti milik orang lain.
+	local owner = rockModel:GetAttribute("LastHitPlayer")
+	if owner and owner ~= Players.LocalPlayer.Name then
+		return false -- Milik orang lain, minggir.
+	end
+
+	-- [RULE 2]: HEALTH PREDICTION
 	local hp = rockModel:GetAttribute("Health")
-	if hp and hp <= 0 then return false end
+	if hp and hp <= 0 then return false end -- Sudah mati (tapi model belum hilang)
+
+	-- [RULE 3]: STRICT ORE FILTER (Children Scan)
+	if anyOreSelected then
+		local hasTargetOre = false
+		-- Ore muncul sebagai Model anak dari Rock
+		for _, child in ipairs(rockModel:GetChildren()) do
+			-- Cek apakah anak ini adalah Ore yang valid
+			if child.Name == "Ore" and child:IsA("Model") then
+				local oreName = child:GetAttribute("Ore")
+				if oreName and Settings.Ores[oreName] then
+					hasTargetOre = true
+					break
+				end
+			end
+		end
+		
+		if hasTargetOre then
+			return true -- Ketemu Ore yang dicari
+		else
+			return false -- Ore tidak ada (atau belum muncul karena HP > 45%)
+		end
+	end
+
+	-- [RULE 4]: STRICT ROCK FILTER
+	if anyRockSelected then
+		return Settings.Rocks[rockModel.Name] == true
+	end
+
+	-- [RULE 5]: DEFAULT MODE (Threshold)
 	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
 	if ((hp or maxHP)/maxHP)*100 > (Settings.CheckThreshold or 45) then return true end
-	for _, c in ipairs(rockModel:GetChildren()) do
-		if c.Name == "Ore" and Settings.Ores[c:GetAttribute("Ore") or ""] then return true end
-	end
+	
 	return false
 end
 
@@ -371,20 +403,32 @@ local function GetBestTargetPart()
 	local rocksFolder = Workspace:FindFirstChild("Rocks")
 	if not rocksFolder then return nil end
 
+	-- Recalculate Flags
 	local anyZ = false
 	for _, v in pairs(Settings.Zones) do if v then anyZ = true break end end
+	
 	local anyR = false
 	for _, v in pairs(Settings.Rocks) do if v then anyR = true break end end
+	
+	local anyO = false
+	for _, v in pairs(Settings.Ores) do if v then anyO = true break end end
 
 	local cl, md = nil, math.huge
+	
+	-- Traverse Path: Workspace.Rocks.(Zone).(SpawnLocation).(Rock)
 	for _, zone in ipairs(rocksFolder:GetChildren()) do
 		if zone:IsA("Folder") and (not anyZ or Settings.Zones[zone.Name]) then
+			-- GetDescendants handles the 'SpawnLocation' folder layer automatically
 			for _, inst in ipairs(zone:GetDescendants()) do
-				if inst:IsA("Model") and (not anyR or Settings.Rocks[inst.Name]) and IsRockValid(inst) then
-					local p = inst.PrimaryPart or inst:FindFirstChild("Hitbox") or inst:FindFirstChildWhichIsA("BasePart")
-					if p then
-						local d = (r.Position - p.Position).Magnitude
-						if d < md then md = d; cl = p end
+				-- Targetting the ROCK Model
+				if inst:IsA("Model") and inst.Parent.Name ~= "Rock" then -- Ensure we aren't targeting the Ore model itself, but the Rock
+					-- Cek apakah ini Rock yang valid?
+					if IsRockValid(inst, anyO, anyR) then
+						local p = inst.PrimaryPart or inst:FindFirstChild("Hitbox") or inst:FindFirstChildWhichIsA("BasePart")
+						if p then
+							local d = (r.Position - p.Position).Magnitude
+							if d < md then md = d; cl = p end
+						end
 					end
 				end
 			end
@@ -393,7 +437,7 @@ local function GetBestTargetPart()
 	return cl
 end
 
--- ========= [8] MOVEMENT ENGINE (LOOKAT + OFFSET) =========
+-- ========= [8] MOVEMENT ENGINE =========
 local activeTween = nil
 local function TweenToPart(targetPart)
 	local _, r = GetCharAndRoot()
@@ -405,7 +449,7 @@ local function TweenToPart(targetPart)
 
 	local dist = (r.Position - targetPos).Magnitude
 	
-	if dist < 0.5 then
+	if dist < 4 then
 		if not lockConn then 
 			StartLock(r, lookAtCF)
 		else
@@ -429,7 +473,7 @@ local function TweenToPart(targetPart)
 	end
 end
 
--- ========= [9] MAIN EXECUTION LOOP =========
+-- ========= [9] MAIN EXECUTION LOOP (SMART PREDICTION) =========
 task.spawn(function()
 	local lastScan, lockedTarget, lockedUntil = 0, nil, 0
 	
@@ -439,13 +483,15 @@ task.spawn(function()
 	end
 	
 	while _G.FarmLoop do
-		task.wait(0.05)
+		task.wait(0.05) -- Fast Loop
 		if Settings.AutoFarm then
 			enableNoclip()
 
 			local _, r = GetCharAndRoot()
 			if r then
 				local now = os.clock()
+				
+				-- 1. Scan / Rescan Target
 				if not (lockedTarget and lockedTarget.Parent) or now >= lockedUntil then
 					if now - lastScan >= (Settings.ScanInterval or 0.25) then
 						lastScan = now
@@ -454,10 +500,31 @@ task.spawn(function()
 					end
 				end
 
+				-- 2. Attack & Monitor Loop
 				if lockedTarget and lockedTarget.Parent then
 					TweenToPart(lockedTarget)
+					
 					local m = lockedTarget:FindFirstAncestorOfClass("Model")
-					if m and (m:GetAttribute("Health") or 1) > 0 then HitPickaxe() end
+					if m then
+						-- [PREDICTION & OWNERSHIP LIVE CHECK]
+						local hp = m:GetAttribute("Health") or 0
+						local owner = m:GetAttribute("LastHitPlayer")
+						
+						-- Cek Kematian (Predictive Zero)
+						if hp <= 0 then
+							-- Target mati/akan mati -> Paksa reset target instan
+							lockedTarget = nil
+							lockedUntil = 0 
+						-- Cek Rebutan (Lost Ownership)
+						elseif owner and owner ~= Players.LocalPlayer.Name then
+							-- Target direbut orang -> Paksa reset target instan
+							lockedTarget = nil
+							lockedUntil = 0
+						else
+							-- Aman -> Pukul
+							HitPickaxe()
+						end
+					end
 				end
 			end
 		else
@@ -474,4 +541,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: HITBOX FIX (GHOST MODE ON - CanQuery: FALSE)")
+print("[✓] FORGE CORE: OWNERSHIP LOGIC + PREDICTIVE KILL ACTIVE")
