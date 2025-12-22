@@ -5,7 +5,7 @@
 --// Features:
 --// - Position: -6 Studs (Under Rock) via Settings.YOffset
 --// - Rotation: LookAt (Mendongak ke atas)
---// - Stability: High-Priority Anti-Shake Camera
+--// - Stability: High-Priority Anti-Shake Camera (LOCKED)
 --// - Physics: Constant Noclip & Hard Lock
 
 local Players = game:GetService("Players")
@@ -69,7 +69,7 @@ setDefault("LockToTarget", true)
 setDefault("LockVelocityZero", true)
 setDefault("AnchorDuringLock", true)
 setDefault("CameraStabilize", true)
-setDefault("CameraSmoothAlpha", 1) -- 1 = Anti guncang total
+setDefault("CameraSmoothAlpha", 1) -- (tetap ada, tapi kamera sekarang hard-lock)
 setDefault("CameraOffsetWorld", Vector3.new(0, 10, 18))
 
 for _, n in ipairs(DATA.Zones) do if Settings.Zones[n] == nil then Settings.Zones[n] = false end end
@@ -148,7 +148,7 @@ local function disableNoclip()
 	table.clear(originalCollide)
 end
 
--- ========= [5] STABLE LOCK & CAMERA =========
+-- ========= [5] STABLE LOCK & CAMERA (ANTI-GUNCANG LOCK) =========
 local lockConn, lockRoot, lockCFrame, lockHum
 local prevPlatformStand, prevAutoRotate, prevAnchored
 
@@ -201,10 +201,18 @@ local function StartLock(rootPart, cf)
 	end)
 end
 
+local cameraBound = false
+
 local function StopCameraStabilize()
-	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
+	pcall(function()
+		RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
+	end)
+	cameraBound = false
+
 	local cam = Workspace.CurrentCamera
-	if cam then cam.CameraType = Enum.CameraType.Custom end
+	if cam then
+		cam.CameraType = Enum.CameraType.Custom
+	end
 end
 
 local function StartCameraStabilize()
@@ -212,27 +220,30 @@ local function StartCameraStabilize()
 		StopCameraStabilize()
 		return
 	end
+	if cameraBound then return end
 
 	local cam = Workspace.CurrentCamera
-	local _, r = GetCharAndRoot()
-	if not (cam and r) then return end
+	if not cam then return end
 
-	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
+	pcall(function()
+		RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
+	end)
 
-	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function()
+	cameraBound = true
+
+	-- PRIORITY LAST: supaya kamera di-set paling akhir (anti guncang maksimal)
+	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Last.Value, function()
 		local _, r2 = GetCharAndRoot()
 		if not r2 then return end
 
 		cam.CameraType = Enum.CameraType.Scriptable
-		local alpha = tonumber(Settings.CameraSmoothAlpha) or 1
-		local desiredPos = r2.Position + (Settings.CameraOffsetWorld or Vector3.new(0, 10, 18))
+
+		local offset = Settings.CameraOffsetWorld or Vector3.new(0, 10, 18)
+		local desiredPos = r2.Position + offset
 		local desiredCF = CFrame.new(desiredPos, r2.Position)
 
-		if alpha >= 1 then
-			cam.CFrame = desiredCF
-		else
-			cam.CFrame = cam.CFrame:Lerp(desiredCF, alpha)
-		end
+		-- HARD LOCK (no shake)
+		cam.CFrame = desiredCF
 	end)
 end
 
@@ -320,15 +331,13 @@ local function TweenToPart(targetPart)
 	local _, r = GetCharAndRoot()
 	if not (r and targetPart and targetPart.Parent) then return end
 
-	-- Saat mulai bergerak ke target: lepas lock lama agar bisa "terbang" ke target baru.
-	StopCameraStabilize()
+	-- NOTE: StopCameraStabilize() DIHILANGKAN agar kamera tetap locked tanpa guncang saat tween.
 	StopLock()
 
 	local rockPos = targetPart.Position
 	local yOff = tonumber(Settings.YOffset) or -6
 	local targetPos = rockPos + Vector3.new(0, yOff, 0)
 
-	-- Di bawah target + menghadap target (lookAt)
 	local lookAtCF = CFrame.lookAt(targetPos, rockPos)
 
 	local speed = math.max(1, tonumber(Settings.TweenSpeed) or 40)
@@ -340,7 +349,6 @@ local function TweenToPart(targetPart)
 	activeTween.Completed:Wait()
 
 	if Settings.AutoFarm then
-		-- Setelah sampai: kunci posisi + arah menghadap target agar tidak jatuh/gagal mining
 		StartLock(r, lookAtCF)
 		StartCameraStabilize()
 	end
@@ -354,8 +362,8 @@ task.spawn(function()
 		task.wait(0.05)
 
 		if Settings.AutoFarm then
-			-- Noclip wajib aktif selama AutoFarm ON
 			enableNoclip()
+			StartCameraStabilize()
 
 			local _, r = GetCharAndRoot()
 			if r then
