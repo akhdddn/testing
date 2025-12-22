@@ -5,7 +5,7 @@
 --// Features:
 --// - Position: -6 Studs (Under Rock) via Settings.YOffset
 --// - Rotation: LookAt (Mendongak ke atas)
---// - Stability: Default Camera (Custom) + Subject Proxy Stabilizer
+--// - Stability: Default Camera (Custom) + Subject Proxy Stabilizer (+ Stabilizer Smoothing)
 --// - Physics: Constant Noclip & Hard Lock
 
 local Players = game:GetService("Players")
@@ -201,10 +201,13 @@ local function StartLock(rootPart, cf)
 	end)
 end
 
--- ========= [6] CAMERA ANTI-GUNCANG (REBUILD: SUBJECT PROXY) =========
+-- ========= [6] CAMERA ANTI-GUNCANG (SUBJECT PROXY + STABILIZER) =========
 -- Kamera tetap default (Custom) agar bisa digeser/rotate/zoom seperti biasa.
--- Anti-guncang saat mining dilakukan dengan mengganti CameraSubject ke "proxy part"
--- yang CFrame-nya diset ke lockCFrame tepat sebelum frame kamera diproses.
+-- Anti-guncang saat mining:
+-- - CameraSubject = proxy part
+-- - Occlusion = Invisicam
+-- Stabilizer:
+-- - proxy.CFrame dismoothing menuju lockCFrame saat mining
 
 local camMgrConn = nil
 local camBound = false
@@ -215,6 +218,11 @@ local prevCamSubject = nil
 local prevOcclusionMode = nil
 
 local camProxy = nil
+
+-- stabilizer state
+local proxySmoothCF = nil
+local proxyLastT = 0
+local PROXY_SMOOTHNESS = 18 -- konstanta stabilizer (lebih besar = lebih cepat mengikuti)
 
 local function EnsureCamProxy()
 	if camProxy and camProxy.Parent then return camProxy end
@@ -245,6 +253,9 @@ local function BindCamProxy()
 	if camBound then return end
 	UnbindCamProxy()
 
+	proxySmoothCF = nil
+	proxyLastT = os.clock()
+
 	-- Update proxy 1 step sebelum kamera (agar kamera membaca posisi terbaru)
 	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value - 1, function()
 		if not camApplied then return end
@@ -252,9 +263,28 @@ local function BindCamProxy()
 		if not r then return end
 
 		local proxy = EnsureCamProxy()
-		if IsMiningState() and lockCFrame then
-			proxy.CFrame = lockCFrame
+		local mining = IsMiningState()
+
+		if mining and lockCFrame then
+			local now = os.clock()
+			local dt = now - (proxyLastT or now)
+			proxyLastT = now
+
+			if not proxySmoothCF then
+				proxySmoothCF = lockCFrame
+			end
+
+			-- Exponential smoothing (stabilizer)
+			local alpha = 1 - (0.01 ^ (dt * (PROXY_SMOOTHNESS or 18))) -- [web:178]
+			if alpha < 0 then alpha = 0 end
+			if alpha > 1 then alpha = 1 end
+
+			proxySmoothCF = proxySmoothCF:Lerp(lockCFrame, alpha)
+			proxy.CFrame = proxySmoothCF
 		else
+			-- reset smoothing saat tidak mining
+			proxySmoothCF = nil
+			proxyLastT = os.clock()
 			proxy.CFrame = r.CFrame
 		end
 	end)
@@ -288,6 +318,9 @@ local function StopCameraStabilize()
 		pcall(function() camProxy:Destroy() end)
 	end
 	camProxy = nil
+
+	proxySmoothCF = nil
+	proxyLastT = 0
 end
 
 local function StartCameraStabilize()
@@ -312,7 +345,6 @@ local function StartCameraStabilize()
 	BindCamProxy()
 	camApplied = true
 
-	-- manager: switch subject based on mining state (tanpa memaksa setiap frame)
 	local lastMining = nil
 	camMgrConn = RunService.Heartbeat:Connect(function()
 		local cam2 = Workspace.CurrentCamera
@@ -346,7 +378,6 @@ local function StartCameraStabilize()
 			end
 		end
 
-		-- Safety: kalau mining dan subject bukan proxy, balikin ke proxy
 		if mining and cam2.CameraSubject ~= camProxy then
 			cam2.CameraSubject = EnsureCamProxy()
 		end
