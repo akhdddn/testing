@@ -69,7 +69,7 @@ setDefault("LockToTarget", true)
 setDefault("LockVelocityZero", true)
 setDefault("AnchorDuringLock", true)
 setDefault("CameraStabilize", true)
-setDefault("CameraSmoothAlpha", 1) -- (tetap ada, tapi kamera sekarang hard-lock)
+setDefault("CameraSmoothAlpha", 1) -- (tetap ada, tapi kamera hard-lock)
 setDefault("CameraOffsetWorld", Vector3.new(0, 10, 18))
 
 for _, n in ipairs(DATA.Zones) do if Settings.Zones[n] == nil then Settings.Zones[n] = false end end
@@ -231,18 +231,33 @@ local function StartCameraStabilize()
 
 	cameraBound = true
 
-	-- PRIORITY LAST: supaya kamera di-set paling akhir (anti guncang maksimal)
+	-- PRIORITY LAST: set kamera paling akhir
 	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Last.Value, function()
 		local _, r2 = GetCharAndRoot()
 		if not r2 then return end
 
 		cam.CameraType = Enum.CameraType.Scriptable
 
-		local offset = Settings.CameraOffsetWorld or Vector3.new(0, 10, 18)
-		local desiredPos = r2.Position + offset
-		local desiredCF = CFrame.new(desiredPos, r2.Position)
+		-- ====== PERUBAHAN UTAMA (ANTI GUNCANG SAAT MINING) ======
+		-- Kalau sedang "mining lock", pakai lockCFrame sebagai acuan (stabil).
+		local baseCF
+		if lockRoot and lockCFrame and lockRoot == r2 then
+			baseCF = lockCFrame
+		else
+			baseCF = r2.CFrame
+		end
 
-		-- HARD LOCK (no shake)
+		local offset = Settings.CameraOffsetWorld or Vector3.new(0, 10, 18)
+		local desiredPos = baseCF.Position + offset
+
+		-- Fokus kamera mengikuti arah mining (badan sudah LookAt target),
+		-- jadi kamera ikut orientasi mining dan tidak jitter.
+		local focusPos = baseCF.Position + (baseCF.LookVector * 100)
+
+		-- Pakai up vector eksplisit agar tidak "roll"/goyang pada sudut tertentu.
+		local desiredCF = CFrame.lookAt(desiredPos, focusPos, Vector3.new(0, 1, 0))
+
+		-- HARD LOCK
 		cam.CFrame = desiredCF
 	end)
 end
@@ -331,7 +346,6 @@ local function TweenToPart(targetPart)
 	local _, r = GetCharAndRoot()
 	if not (r and targetPart and targetPart.Parent) then return end
 
-	-- NOTE: StopCameraStabilize() DIHILANGKAN agar kamera tetap locked tanpa guncang saat tween.
 	StopLock()
 
 	local rockPos = targetPart.Position
