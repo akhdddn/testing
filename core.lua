@@ -1,9 +1,8 @@
 --// ==========================================================
---// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (LOOP FIX V2)
+--// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (CLEAN VERSION)
 --// ==========================================================
---// Status: FINAL (Deadzone Logic Implemented)
---// Fix: Removed Micro-Tweening that paused the Attack Loop
---// Logic: If Distance < 8, SNAP instead of TWEEN.
+--// Status: FINAL (No Debug / No Checks)
+--// Logic: Direct Execution. Assumes Remote & Tool are valid.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -334,6 +333,7 @@ local toolActivatedRF = nil
 local lastHit = 0
 
 local function ResolveToolActivated()
+	-- Direct path as requested
 	pcall(function()
 		toolActivatedRF = ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated
 	end)
@@ -345,6 +345,8 @@ local function HitPickaxe()
 	lastHit = now
 	
 	if not toolActivatedRF then ResolveToolActivated() end
+	
+	-- Unconditional Fire
 	if toolActivatedRF then
 		task.spawn(function() 
 			pcall(function() toolActivatedRF:InvokeServer("Pickaxe") end) 
@@ -423,7 +425,7 @@ local function GetBestTargetPart()
 	return cl
 end
 
--- ========= [8] MOVEMENT ENGINE (DEADZONE FIX) =========
+-- ========= [8] MOVEMENT ENGINE =========
 local activeTween = nil
 local function TweenToPart(targetPart)
 	local _, r = GetCharAndRoot()
@@ -435,17 +437,13 @@ local function TweenToPart(targetPart)
 
 	local dist = (r.Position - targetPos).Magnitude
 	
-	-- [FIX]: DEADZONE LOGIC (Toleransi 8 Studs)
-	-- Jika jarak ke titik target < 8 studs, ANGGAP SUDAH SAMPAI.
-	-- Jangan Tween lagi. Cukup Snap (StartLock) dan biarkan kode lanjut ke HitPickaxe.
-	-- Ini mencegah loop "Tween -> Stop Attack -> Tween".
 	if dist < 8 then
 		if not lockConn then 
 			StartLock(r, lookAtCF)
 		else
 			StartLock(r, lookAtCF) 
 		end
-		return -- Langsung kembali ke Loop Utama untuk memukul
+		return
 	end
 
 	StopLock()
@@ -456,7 +454,7 @@ local function TweenToPart(targetPart)
 	if activeTween then activeTween:Cancel() end
 	activeTween = TweenService:Create(r, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = lookAtCF})
 	activeTween:Play()
-	activeTween.Completed:Wait() -- Hanya Wait jika perjalanan jauh
+	activeTween.Completed:Wait()
 
 	if Settings.AutoFarm then
 		StartLock(r, lookAtCF)
@@ -494,7 +492,6 @@ task.spawn(function()
 
 					-- 2. Attack
 					if lockedTarget and lockedTarget.Parent then
-						-- TweenToPart sekarang akan return instant jika sudah dekat (Deadzone)
 						TweenToPart(lockedTarget)
 						
 						local m = lockedTarget:FindFirstAncestorOfClass("Model")
@@ -509,7 +506,7 @@ task.spawn(function()
 								lockedTarget = nil
 								lockedUntil = 0
 							else
-								HitPickaxe() -- Pukulan dieksekusi lancar karena tidak ada wait di TweenToPart
+								HitPickaxe()
 							end
 						end
 					end
@@ -529,4 +526,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: LOOP FIXED (NO MICRO-TWEEN STUTTER)")
+print("[✓] FORGE CORE: CLEAN VERSION (DIRECT HIT)")
