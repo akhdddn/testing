@@ -5,7 +5,7 @@
 --// Features:
 --// - Position: -6 Studs (Under Rock) via Settings.YOffset
 --// - Rotation: LookAt (Mendongak ke atas)
---// - Stability: High-Priority Anti-Shake Camera (LOCKED)
+--// - Stability: Anti-Shake Orbit Camera (PLAYER CENTER + FREE LOOK)
 --// - Physics: Constant Noclip & Hard Lock
 
 local Players = game:GetService("Players")
@@ -13,6 +13,7 @@ local Workspace = game:GetService("Workspace")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 
 local CAMERA_BIND_NAME = "Forge_CameraFollow"
 
@@ -69,7 +70,7 @@ setDefault("LockToTarget", true)
 setDefault("LockVelocityZero", true)
 setDefault("AnchorDuringLock", true)
 setDefault("CameraStabilize", true)
-setDefault("CameraSmoothAlpha", 1) -- (tetap ada, tapi kamera hard-lock)
+setDefault("CameraSmoothAlpha", 1)
 setDefault("CameraOffsetWorld", Vector3.new(0, 10, 18))
 
 for _, n in ipairs(DATA.Zones) do if Settings.Zones[n] == nil then Settings.Zones[n] = false end end
@@ -148,7 +149,7 @@ local function disableNoclip()
 	table.clear(originalCollide)
 end
 
--- ========= [5] STABLE LOCK & CAMERA (ANTI-GUNCANG LOCK) =========
+-- ========= [5] STABLE LOCK & CAMERA (ANTI-GUNCANG + FREE LOOK) =========
 local lockConn, lockRoot, lockCFrame, lockHum
 local prevPlatformStand, prevAutoRotate, prevAnchored
 
@@ -201,17 +202,29 @@ local function StartLock(rootPart, cf)
 	end)
 end
 
+-- ===== Camera Orbit State =====
 local cameraBound = false
+local camYaw, camPitch = 0, 0
+local camRadius = 22
+local mouseDeltaAccum = Vector2.zero
+local wheelAccum = 0
+local inputMoveConn, inputWheelConn
+local prevCamType, prevCamSubject
 
 local function StopCameraStabilize()
-	pcall(function()
-		RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
-	end)
+	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
 	cameraBound = false
+
+	if inputMoveConn then inputMoveConn:Disconnect() end
+	if inputWheelConn then inputWheelConn:Disconnect() end
+	inputMoveConn, inputWheelConn = nil, nil
+	mouseDeltaAccum = Vector2.zero
+	wheelAccum = 0
 
 	local cam = Workspace.CurrentCamera
 	if cam then
-		cam.CameraType = Enum.CameraType.Custom
+		if prevCamType ~= nil then cam.CameraType = prevCamType end
+		if prevCamSubject ~= nil then cam.CameraSubject = prevCamSubject end
 	end
 end
 
@@ -225,40 +238,98 @@ local function StartCameraStabilize()
 	local cam = Workspace.CurrentCamera
 	if not cam then return end
 
-	pcall(function()
-		RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
+	local _, r = GetCharAndRoot()
+	if not r then return end
+
+	-- simpan state sebelumnya
+	prevCamType = cam.CameraType
+	prevCamSubject = cam.CameraSubject
+
+	-- ambil center awal (kalau sedang lock mining, pakai lockCFrame)
+	local centerPos
+	if lockRoot and lockCFrame and lockRoot == r then
+		centerPos = lockCFrame.Position
+	else
+		centerPos = r.Position
+	end
+
+	-- set radius dari Settings.CameraOffsetWorld agar tetap “selaras” dengan GUI kamu
+	local off = Settings.CameraOffsetWorld or Vector3.new(0, 10, 18)
+	local initialRadius = off.Magnitude
+	if initialRadius <= 0.01 then initialRadius = 22 end
+	camRadius = initialRadius
+
+	-- inisialisasi yaw/pitch dari posisi kamera saat ini biar tidak loncat
+	local rel = cam.CFrame.Position - centerPos
+	local relMag = rel.Magnitude
+	if relMag > 0.01 then
+		camRadius = relMag
+		camYaw = math.atan2(rel.X, rel.Z)
+		camPitch = math.asin(math.clamp(rel.Y / relMag, -0.999, 0.999))
+	end
+
+	-- input: bebas geser/putar kamera (mouse move + scroll)
+	if inputMoveConn then inputMoveConn:Disconnect() end
+	if inputWheelConn then inputWheelConn:Disconnect() end
+
+	inputMoveConn = UserInputService.InputChanged:Connect(function(input, gpe)
+		if gpe then return end
+		if input.UserInputType == Enum.UserInputType.MouseMovement then
+			mouseDeltaAccum += input.Delta
+		end
 	end)
 
+	inputWheelConn = UserInputService.InputChanged:Connect(function(input, gpe)
+		if gpe then return end
+		if input.UserInputType == Enum.UserInputType.MouseWheel then
+			wheelAccum += input.Position.Z
+		end
+	end)
+
+	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
 	cameraBound = true
 
-	-- PRIORITY LAST: set kamera paling akhir
+	-- update tiap frame agar stabil (tanpa shake) namun tetap free-look
 	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Last.Value, function()
 		local _, r2 = GetCharAndRoot()
 		if not r2 then return end
 
-		cam.CameraType = Enum.CameraType.Scriptable
-
-		-- ====== PERUBAHAN UTAMA (ANTI GUNCANG SAAT MINING) ======
-		-- Kalau sedang "mining lock", pakai lockCFrame sebagai acuan (stabil).
-		local baseCF
+		local center
 		if lockRoot and lockCFrame and lockRoot == r2 then
-			baseCF = lockCFrame
+			center = lockCFrame.Position
 		else
-			baseCF = r2.CFrame
+			center = r2.Position
 		end
 
-		local offset = Settings.CameraOffsetWorld or Vector3.new(0, 10, 18)
-		local desiredPos = baseCF.Position + offset
+		-- konsumsi input
+		local md = mouseDeltaAccum
+		mouseDeltaAccum = Vector2.zero
 
-		-- Fokus kamera mengikuti arah mining (badan sudah LookAt target),
-		-- jadi kamera ikut orientasi mining dan tidak jitter.
-		local focusPos = baseCF.Position + (baseCF.LookVector * 100)
+		local wh = wheelAccum
+		wheelAccum = 0
 
-		-- Pakai up vector eksplisit agar tidak "roll"/goyang pada sudut tertentu.
-		local desiredCF = CFrame.lookAt(desiredPos, focusPos, Vector3.new(0, 1, 0))
+		-- sensitivitas (tanpa nambah slider baru)
+		local sens = 0.0025
+		camYaw -= md.X * sens
+		camPitch -= md.Y * sens
 
-		-- HARD LOCK
-		cam.CFrame = desiredCF
+		-- clamp pitch
+		local minPitch = math.rad(-80)
+		local maxPitch = math.rad(80)
+		camPitch = math.clamp(camPitch, minPitch, maxPitch)
+
+		-- zoom wheel
+		if wh ~= 0 then
+			camRadius = math.clamp(camRadius - (wh * 1.25), 6, 120)
+		end
+
+		-- orbit camera position
+		cam.CameraType = Enum.CameraType.Scriptable
+		cam.CameraSubject = r2
+
+		local rot = CFrame.Angles(0, camYaw, 0) * CFrame.Angles(camPitch, 0, 0)
+		local camPos = center + (rot * Vector3.new(0, 0, camRadius))
+		cam.CFrame = CFrame.lookAt(camPos, center, Vector3.new(0, 1, 0))
 	end)
 end
 
