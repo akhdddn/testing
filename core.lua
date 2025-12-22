@@ -2,7 +2,7 @@
 --// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION
 --// ==========================================================
 --// Status: FINAL (No Summaries / No Cuts)
---// Features: 
+--// Features:
 --// - Position: -6 Studs (Under Rock) via Settings.YOffset
 --// - Rotation: LookAt (Mendongak ke atas)
 --// - Stability: High-Priority Anti-Shake Camera
@@ -78,7 +78,7 @@ for _, n in ipairs(DATA.Ores)  do if Settings.Ores[n]  == nil then Settings.Ores
 
 if _G.FarmLoop == nil then _G.FarmLoop = true end
 
--- ========= [3] UTILS & NOCLIP ENGINE =========
+-- ========= [3] UTILS =========
 local function GetCharAndRoot()
 	local c = Players.LocalPlayer.Character
 	if not (c and c.Parent) then return nil, nil end
@@ -91,6 +91,7 @@ local function GetHumanoid()
 	return c and c:FindFirstChildOfClass("Humanoid")
 end
 
+-- ========= [4] NOCLIP ENGINE (STATE-BASED) =========
 local noclipConn, descConn
 local partsSet = {}
 local originalCollide = {}
@@ -111,6 +112,7 @@ local function enableNoclip()
 	if noclipConn then return end
 	local c = Players.LocalPlayer.Character
 	cacheCharacterParts(c)
+
 	if descConn then descConn:Disconnect() end
 	if c then
 		descConn = c.DescendantAdded:Connect(function(inst)
@@ -120,12 +122,13 @@ local function enableNoclip()
 			end
 		end)
 	end
+
 	noclipConn = RunService.Stepped:Connect(function()
 		for part in pairs(partsSet) do
-			if part and part.Parent then 
-				part.CanCollide = false 
-			else 
-				partsSet[part] = nil 
+			if part and part.Parent then
+				part.CanCollide = false
+			else
+				partsSet[part] = nil
 			end
 		end
 	end)
@@ -135,40 +138,57 @@ local function disableNoclip()
 	if noclipConn then noclipConn:Disconnect() end
 	if descConn then descConn:Disconnect() end
 	noclipConn, descConn = nil, nil
+
 	for part, was in pairs(originalCollide) do
-		if part and part.Parent then part.CanCollide = was end
+		if part and part.Parent then
+			part.CanCollide = was
+		end
 	end
 	table.clear(partsSet)
 	table.clear(originalCollide)
 end
 
--- ========= [4] STABLE LOCK & CAMERA =========
+-- ========= [5] STABLE LOCK & CAMERA =========
 local lockConn, lockRoot, lockCFrame, lockHum
 local prevPlatformStand, prevAutoRotate, prevAnchored
 
 local function StopLock()
 	if lockConn then lockConn:Disconnect() end
 	lockConn = nil
-	if lockRoot and lockRoot.Parent and prevAnchored ~= nil then lockRoot.Anchored = prevAnchored end
+
+	if lockRoot and lockRoot.Parent and prevAnchored ~= nil then
+		lockRoot.Anchored = prevAnchored
+	end
+
 	if lockHum and lockHum.Parent then
 		lockHum.PlatformStand = prevPlatformStand or false
 		lockHum.AutoRotate = prevAutoRotate or true
 	end
+
 	lockRoot, lockHum, lockCFrame = nil, nil, nil
 end
 
 local function StartLock(rootPart, cf)
-	if not Settings.LockToTarget then StopLock() return end
+	if not Settings.LockToTarget then
+		StopLock()
+		return
+	end
+
 	lockRoot, lockCFrame = rootPart, cf
 	lockHum = GetHumanoid()
+
 	if lockHum then
 		prevPlatformStand, prevAutoRotate = lockHum.PlatformStand, lockHum.AutoRotate
 		lockHum.PlatformStand, lockHum.AutoRotate = true, false
 	end
+
 	if lockRoot then
 		prevAnchored = lockRoot.Anchored
-		if Settings.AnchorDuringLock then lockRoot.Anchored = true end
+		if Settings.AnchorDuringLock then
+			lockRoot.Anchored = true
+		end
 	end
+
 	if lockConn then lockConn:Disconnect() end
 	lockConn = RunService.Stepped:Connect(function()
 		if lockRoot and lockRoot.Parent and lockCFrame then
@@ -188,22 +208,26 @@ local function StopCameraStabilize()
 end
 
 local function StartCameraStabilize()
-	if not Settings.CameraStabilize then StopCameraStabilize() return end
+	if not Settings.CameraStabilize then
+		StopCameraStabilize()
+		return
+	end
+
 	local cam = Workspace.CurrentCamera
 	local _, r = GetCharAndRoot()
 	if not (cam and r) then return end
-	
+
 	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
-	
-	-- Anti-Guncangan: Priority Camera + 1
+
 	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function()
 		local _, r2 = GetCharAndRoot()
 		if not r2 then return end
+
 		cam.CameraType = Enum.CameraType.Scriptable
 		local alpha = tonumber(Settings.CameraSmoothAlpha) or 1
 		local desiredPos = r2.Position + (Settings.CameraOffsetWorld or Vector3.new(0, 10, 18))
 		local desiredCF = CFrame.new(desiredPos, r2.Position)
-		
+
 		if alpha >= 1 then
 			cam.CFrame = desiredCF
 		else
@@ -212,7 +236,7 @@ local function StartCameraStabilize()
 	end)
 end
 
--- ========= [5] TOOL & TARGET LOGIC =========
+-- ========= [6] TOOL & TARGET LOGIC =========
 local toolActivatedRF = nil
 local lastHit = 0
 
@@ -226,17 +250,28 @@ local function HitPickaxe()
 	local now = os.clock()
 	if (now - lastHit) < (Settings.HitInterval or 0.15) then return end
 	lastHit = now
+
 	if not toolActivatedRF then ResolveToolActivated() end
-	task.spawn(function() pcall(function() toolActivatedRF:InvokeServer("Pickaxe") end) end)
+	task.spawn(function()
+		pcall(function()
+			toolActivatedRF:InvokeServer("Pickaxe")
+		end)
+	end)
 end
 
 local function IsRockValid(rockModel)
 	local hp = rockModel:GetAttribute("Health")
 	if hp and hp <= 0 then return false end
+
 	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
-	if ((hp or maxHP)/maxHP)*100 > (Settings.CheckThreshold or 45) then return true end
+	if ((hp or maxHP)/maxHP)*100 > (Settings.CheckThreshold or 45) then
+		return true
+	end
+
 	for _, c in ipairs(rockModel:GetChildren()) do
-		if c.Name == "Ore" and Settings.Ores[c:GetAttribute("Ore") or ""] then return true end
+		if c.Name == "Ore" and Settings.Ores[c:GetAttribute("Ore") or ""] then
+			return true
+		end
 	end
 	return false
 end
@@ -244,13 +279,19 @@ end
 local function GetBestTargetPart()
 	local _, r = GetCharAndRoot()
 	if not (Settings.AutoFarm and r) then return nil end
+
 	local rocksFolder = Workspace:FindFirstChild("Rocks")
 	if not rocksFolder then return nil end
-	
+
 	local anyZ = false
-	for _, v in pairs(Settings.Zones) do if v then anyZ = true break end end
+	for _, v in pairs(Settings.Zones) do
+		if v then anyZ = true break end
+	end
+
 	local anyR = false
-	for _, v in pairs(Settings.Rocks) do if v then anyR = true break end end
+	for _, v in pairs(Settings.Rocks) do
+		if v then anyR = true break end
+	end
 
 	local cl, md = nil, math.huge
 	for _, zone in ipairs(rocksFolder:GetChildren()) do
@@ -260,7 +301,10 @@ local function GetBestTargetPart()
 					local p = inst.PrimaryPart or inst:FindFirstChild("Hitbox") or inst:FindFirstChildWhichIsA("BasePart")
 					if p then
 						local d = (r.Position - p.Position).Magnitude
-						if d < md then md = d; cl = p end
+						if d < md then
+							md = d
+							cl = p
+						end
 					end
 				end
 			end
@@ -269,46 +313,54 @@ local function GetBestTargetPart()
 	return cl
 end
 
--- ========= [6] MOVEMENT ENGINE (LOOKAT + OFFSET) =========
+-- ========= [7] MOVEMENT ENGINE (TWEEN + NOCLIP STATE + LOCK) =========
 local activeTween = nil
+
 local function TweenToPart(targetPart)
 	local _, r = GetCharAndRoot()
-	if not (r and targetPart.Parent) then return end
-	enableNoclip()
-	
-	local rockPos = targetPart.Position
-	-- Posisi target di bawah batu sesuai Slider YOffset (Default -6)
-	local targetPos = rockPos + Vector3.new(0, tonumber(Settings.YOffset) or -6, 0)
-	
-	-- MENDONGAK: Badan menghadap ke batu
-	local lookAtCF = CFrame.lookAt(targetPos, rockPos)
-	
-	local speed = math.max(1, tonumber(Settings.TweenSpeed) or 40)
-	local duration = (r.Position - targetPos).Magnitude / speed
-	
+	if not (r and targetPart and targetPart.Parent) then return end
+
+	-- Saat mulai bergerak ke target: lepas lock lama agar bisa "terbang" ke target baru.
 	StopCameraStabilize()
 	StopLock()
-	
+
+	local rockPos = targetPart.Position
+	local yOff = tonumber(Settings.YOffset) or -6
+	local targetPos = rockPos + Vector3.new(0, yOff, 0)
+
+	-- Di bawah target + menghadap target (lookAt)
+	local lookAtCF = CFrame.lookAt(targetPos, rockPos)
+
+	local speed = math.max(1, tonumber(Settings.TweenSpeed) or 40)
+	local duration = (r.Position - targetPos).Magnitude / speed
+
 	if activeTween then activeTween:Cancel() end
 	activeTween = TweenService:Create(r, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = lookAtCF})
 	activeTween:Play()
 	activeTween.Completed:Wait()
-	
+
 	if Settings.AutoFarm then
+		-- Setelah sampai: kunci posisi + arah menghadap target agar tidak jatuh/gagal mining
 		StartLock(r, lookAtCF)
 		StartCameraStabilize()
 	end
 end
 
--- ========= [7] MAIN EXECUTION LOOP =========
+-- ========= [8] MAIN EXECUTION LOOP =========
 task.spawn(function()
 	local lastScan, lockedTarget, lockedUntil = 0, nil, 0
+
 	while _G.FarmLoop do
 		task.wait(0.05)
+
 		if Settings.AutoFarm then
+			-- Noclip wajib aktif selama AutoFarm ON
+			enableNoclip()
+
 			local _, r = GetCharAndRoot()
 			if r then
 				local now = os.clock()
+
 				if not (lockedTarget and lockedTarget.Parent) or now >= lockedUntil then
 					if now - lastScan >= (Settings.ScanInterval or 0.25) then
 						lastScan = now
@@ -316,10 +368,13 @@ task.spawn(function()
 						lockedUntil = now + (Settings.TargetStickTime or 0.35)
 					end
 				end
+
 				if lockedTarget and lockedTarget.Parent then
 					TweenToPart(lockedTarget)
 					local m = lockedTarget:FindFirstAncestorOfClass("Model")
-					if m and (m:GetAttribute("Health") or 1) > 0 then HitPickaxe() end
+					if m and (m:GetAttribute("Health") or 1) > 0 then
+						HitPickaxe()
+					end
 				end
 			end
 		else
@@ -328,6 +383,7 @@ task.spawn(function()
 			disableNoclip()
 		end
 	end
+
 	StopLock()
 	StopCameraStabilize()
 	disableNoclip()
