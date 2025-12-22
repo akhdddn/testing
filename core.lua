@@ -5,7 +5,7 @@
 --// Features:
 --// - Position: -6 Studs (Under Rock) via Settings.YOffset
 --// - Rotation: LookAt (Mendongak ke atas)
---// - Stability: Anti-Shake Orbit Camera (PLAYER CENTER + FREE LOOK)
+--// - Stability: No-Shake Default Camera (Custom + Invisicam Occlusion)
 --// - Physics: Constant Noclip & Hard Lock
 
 local Players = game:GetService("Players")
@@ -13,7 +13,6 @@ local Workspace = game:GetService("Workspace")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
 
 local CAMERA_BIND_NAME = "Forge_CameraFollow"
 
@@ -149,7 +148,7 @@ local function disableNoclip()
 	table.clear(originalCollide)
 end
 
--- ========= [5] STABLE LOCK & CAMERA (ANTI-GUNCANG + FREE LOOK) =========
+-- ========= [5] STABLE LOCK & CAMERA =========
 local lockConn, lockRoot, lockCFrame, lockHum
 local prevPlatformStand, prevAutoRotate, prevAnchored
 
@@ -202,30 +201,28 @@ local function StartLock(rootPart, cf)
 	end)
 end
 
--- ===== Camera Orbit State =====
-local cameraBound = false
-local camYaw, camPitch = 0, 0
-local camRadius = 22
-local mouseDeltaAccum = Vector2.zero
-local wheelAccum = 0
-local inputMoveConn, inputWheelConn
-local prevCamType, prevCamSubject
+-- ====== CAMERA: DEFAULT FEEL, NO SHAKE WHILE MINING ======
+local camStateApplied = false
+local prevOcclusionMode = nil
 
 local function StopCameraStabilize()
+	-- (Tetap ada unbind supaya kompatibel dengan versi sebelumnya, walaupun sekarang kamera tidak memakai BindToRenderStep)
 	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
-	cameraBound = false
-
-	if inputMoveConn then inputMoveConn:Disconnect() end
-	if inputWheelConn then inputWheelConn:Disconnect() end
-	inputMoveConn, inputWheelConn = nil, nil
-	mouseDeltaAccum = Vector2.zero
-	wheelAccum = 0
 
 	local cam = Workspace.CurrentCamera
 	if cam then
-		if prevCamType ~= nil then cam.CameraType = prevCamType end
-		if prevCamSubject ~= nil then cam.CameraSubject = prevCamSubject end
+		cam.CameraType = Enum.CameraType.Custom
 	end
+
+	local plr = Players.LocalPlayer
+	if plr and prevOcclusionMode ~= nil then
+		pcall(function()
+			plr.DevCameraOcclusionMode = prevOcclusionMode
+		end)
+	end
+
+	prevOcclusionMode = nil
+	camStateApplied = false
 end
 
 local function StartCameraStabilize()
@@ -233,104 +230,30 @@ local function StartCameraStabilize()
 		StopCameraStabilize()
 		return
 	end
-	if cameraBound then return end
+	if camStateApplied then return end
 
 	local cam = Workspace.CurrentCamera
-	if not cam then return end
+	local plr = Players.LocalPlayer
+	if not (cam and plr) then return end
 
-	local _, r = GetCharAndRoot()
-	if not r then return end
+	-- Pastikan kamera tetap "seperti default" (bisa digeser/lihat kemanapun)
+	cam.CameraType = Enum.CameraType.Custom
 
-	-- simpan state sebelumnya
-	prevCamType = cam.CameraType
-	prevCamSubject = cam.CameraSubject
-
-	-- ambil center awal (kalau sedang lock mining, pakai lockCFrame)
-	local centerPos
-	if lockRoot and lockCFrame and lockRoot == r then
-		centerPos = lockCFrame.Position
-	else
-		centerPos = r.Position
+	-- Pastikan subject kamera tetap humanoid (default behavior)
+	local hum = GetHumanoid()
+	if hum then
+		cam.CameraSubject = hum
 	end
 
-	-- set radius dari Settings.CameraOffsetWorld agar tetap “selaras” dengan GUI kamu
-	local off = Settings.CameraOffsetWorld or Vector3.new(0, 10, 18)
-	local initialRadius = off.Magnitude
-	if initialRadius <= 0.01 then initialRadius = 22 end
-	camRadius = initialRadius
-
-	-- inisialisasi yaw/pitch dari posisi kamera saat ini biar tidak loncat
-	local rel = cam.CFrame.Position - centerPos
-	local relMag = rel.Magnitude
-	if relMag > 0.01 then
-		camRadius = relMag
-		camYaw = math.atan2(rel.X, rel.Z)
-		camPitch = math.asin(math.clamp(rel.Y / relMag, -0.999, 0.999))
+	-- Simpan dan ubah occlusion agar saat mining di bawah batu kamera tidak dipaksa zoom/geser (yang memicu guncang)
+	if prevOcclusionMode == nil then
+		prevOcclusionMode = plr.DevCameraOcclusionMode
 	end
-
-	-- input: bebas geser/putar kamera (mouse move + scroll)
-	if inputMoveConn then inputMoveConn:Disconnect() end
-	if inputWheelConn then inputWheelConn:Disconnect() end
-
-	inputMoveConn = UserInputService.InputChanged:Connect(function(input, gpe)
-		if gpe then return end
-		if input.UserInputType == Enum.UserInputType.MouseMovement then
-			mouseDeltaAccum += input.Delta
-		end
+	pcall(function()
+		plr.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
 	end)
 
-	inputWheelConn = UserInputService.InputChanged:Connect(function(input, gpe)
-		if gpe then return end
-		if input.UserInputType == Enum.UserInputType.MouseWheel then
-			wheelAccum += input.Position.Z
-		end
-	end)
-
-	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
-	cameraBound = true
-
-	-- update tiap frame agar stabil (tanpa shake) namun tetap free-look
-	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Last.Value, function()
-		local _, r2 = GetCharAndRoot()
-		if not r2 then return end
-
-		local center
-		if lockRoot and lockCFrame and lockRoot == r2 then
-			center = lockCFrame.Position
-		else
-			center = r2.Position
-		end
-
-		-- konsumsi input
-		local md = mouseDeltaAccum
-		mouseDeltaAccum = Vector2.zero
-
-		local wh = wheelAccum
-		wheelAccum = 0
-
-		-- sensitivitas (tanpa nambah slider baru)
-		local sens = 0.0025
-		camYaw -= md.X * sens
-		camPitch -= md.Y * sens
-
-		-- clamp pitch
-		local minPitch = math.rad(-80)
-		local maxPitch = math.rad(80)
-		camPitch = math.clamp(camPitch, minPitch, maxPitch)
-
-		-- zoom wheel
-		if wh ~= 0 then
-			camRadius = math.clamp(camRadius - (wh * 1.25), 6, 120)
-		end
-
-		-- orbit camera position
-		cam.CameraType = Enum.CameraType.Scriptable
-		cam.CameraSubject = r2
-
-		local rot = CFrame.Angles(0, camYaw, 0) * CFrame.Angles(camPitch, 0, 0)
-		local camPos = center + (rot * Vector3.new(0, 0, camRadius))
-		cam.CFrame = CFrame.lookAt(camPos, center, Vector3.new(0, 1, 0))
-	end)
+	camStateApplied = true
 end
 
 -- ========= [6] TOOL & TARGET LOGIC =========
