@@ -5,8 +5,8 @@
 --// Features:
 --// - Position: -6 Studs (Under Rock) via Settings.YOffset
 --// - Rotation: LookAt (Mendongak ke atas)
---// - Stability: Default Camera (Custom) + Subject Proxy Stabilizer (+ Stabilizer Smoothing)
---// - Physics: Constant Noclip & Hard Lock
+--// - Stability: Default Camera (Custom) + Invisicam while Mining
+--// - Physics: Constant Noclip & Drift-Checked Hard Lock (PreSimulation)
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -58,7 +58,7 @@ end
 
 setDefault("AutoFarm", false)
 setDefault("TweenSpeed", 40)
-setDefault("YOffset", -6) -- Player di bawah batu
+setDefault("YOffset", -6)
 setDefault("CheckThreshold", 45)
 setDefault("ScanInterval", 0.25)
 setDefault("HitInterval", 0.15)
@@ -140,17 +140,18 @@ local function disableNoclip()
 	noclipConn, descConn = nil, nil
 
 	for part, was in pairs(originalCollide) do
-		if part and part.Parent then
-			part.CanCollide = was
-		end
+		if part and part.Parent then part.CanCollide = was end
 	end
 	table.clear(partsSet)
 	table.clear(originalCollide)
 end
 
--- ========= [5] STABLE LOCK =========
+-- ========= [5] HARD LOCK (PreSimulation Drift-Check) =========
 local lockConn, lockRoot, lockCFrame, lockHum
 local prevPlatformStand, prevAutoRotate, prevAnchored
+
+local DRIFT_POS_EPS = 0.02
+local DRIFT_ANG_EPS = math.rad(0.25)
 
 local function StopLock()
 	if lockConn then lockConn:Disconnect() end
@@ -169,10 +170,7 @@ local function StopLock()
 end
 
 local function StartLock(rootPart, cf)
-	if not Settings.LockToTarget then
-		StopLock()
-		return
-	end
+	if not Settings.LockToTarget then StopLock() return end
 
 	lockRoot, lockCFrame = rootPart, cf
 	lockHum = GetHumanoid()
@@ -187,115 +185,49 @@ local function StartLock(rootPart, cf)
 		if Settings.AnchorDuringLock then
 			lockRoot.Anchored = true
 		end
+
+		-- Set sekali saat mulai lock
+		lockRoot.CFrame = lockCFrame
+		if Settings.LockVelocityZero then
+			lockRoot.AssemblyLinearVelocity = Vector3.zero
+			lockRoot.AssemblyAngularVelocity = Vector3.zero
+		end
 	end
 
 	if lockConn then lockConn:Disconnect() end
-	lockConn = RunService.Stepped:Connect(function()
-		if lockRoot and lockRoot.Parent and lockCFrame then
+
+	-- Drift-check di PreSimulation (lebih konsisten untuk lock daripada Stepped) [page:0]
+	lockConn = RunService.PreSimulation:Connect(function()
+		if not (lockRoot and lockRoot.Parent and lockCFrame) then return end
+
+		local cur = lockRoot.CFrame
+		local dp = (cur.Position - lockCFrame.Position).Magnitude
+		local _, ang = (cur:ToObjectSpace(lockCFrame)):ToAxisAngle()
+
+		if dp > DRIFT_POS_EPS or math.abs(ang) > DRIFT_ANG_EPS then
 			lockRoot.CFrame = lockCFrame
-			if Settings.LockVelocityZero then
-				lockRoot.AssemblyLinearVelocity = Vector3.zero
-				lockRoot.AssemblyAngularVelocity = Vector3.zero
-			end
+		end
+
+		if Settings.LockVelocityZero then
+			lockRoot.AssemblyLinearVelocity = Vector3.zero
+			lockRoot.AssemblyAngularVelocity = Vector3.zero
 		end
 	end)
 end
 
--- ========= [6] CAMERA ANTI-GUNCANG (SUBJECT PROXY + STABILIZER) =========
--- Kamera tetap default (Custom) agar bisa digeser/rotate/zoom seperti biasa.
--- Anti-guncang saat mining:
--- - CameraSubject = proxy part
--- - Occlusion = Invisicam
--- Stabilizer:
--- - proxy.CFrame dismoothing menuju lockCFrame saat mining
-
-local camMgrConn = nil
-local camBound = false
+-- ========= [6] CAMERA ANTI-GUNCANG (DEFAULT FEEL + INVISICAM) =========
 local camApplied = false
-
+local prevOcclusionMode = nil
 local prevCamType = nil
 local prevCamSubject = nil
-local prevOcclusionMode = nil
-
-local camProxy = nil
-
--- stabilizer state
-local proxySmoothCF = nil
-local proxyLastT = 0
-local PROXY_SMOOTHNESS = 18 -- konstanta stabilizer (lebih besar = lebih cepat mengikuti)
-
-local function EnsureCamProxy()
-	if camProxy and camProxy.Parent then return camProxy end
-	local p = Instance.new("Part")
-	p.Name = "Forge_CameraProxy"
-	p.Anchored = true
-	p.CanCollide = false
-	p.Transparency = 1
-	p.Size = Vector3.new(1, 1, 1)
-	p.Parent = Workspace
-	camProxy = p
-	return camProxy
-end
 
 local function IsMiningState()
 	if not Settings.AutoFarm then return false end
 	return (lockConn ~= nil and lockRoot ~= nil and lockCFrame ~= nil)
 end
 
-local function UnbindCamProxy()
-	if camBound then
-		pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
-		camBound = false
-	end
-end
-
-local function BindCamProxy()
-	if camBound then return end
-	UnbindCamProxy()
-
-	proxySmoothCF = nil
-	proxyLastT = os.clock()
-
-	-- Update proxy 1 step sebelum kamera (agar kamera membaca posisi terbaru)
-	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value - 1, function()
-		if not camApplied then return end
-		local _, r = GetCharAndRoot()
-		if not r then return end
-
-		local proxy = EnsureCamProxy()
-		local mining = IsMiningState()
-
-		if mining and lockCFrame then
-			local now = os.clock()
-			local dt = now - (proxyLastT or now)
-			proxyLastT = now
-
-			if not proxySmoothCF then
-				proxySmoothCF = lockCFrame
-			end
-
-			-- Exponential smoothing (stabilizer)
-			local alpha = 1 - (0.01 ^ (dt * (PROXY_SMOOTHNESS or 18))) -- [web:178]
-			if alpha < 0 then alpha = 0 end
-			if alpha > 1 then alpha = 1 end
-
-			proxySmoothCF = proxySmoothCF:Lerp(lockCFrame, alpha)
-			proxy.CFrame = proxySmoothCF
-		else
-			-- reset smoothing saat tidak mining
-			proxySmoothCF = nil
-			proxyLastT = os.clock()
-			proxy.CFrame = r.CFrame
-		end
-	end)
-
-	camBound = true
-end
-
 local function StopCameraStabilize()
-	UnbindCamProxy()
-	if camMgrConn then camMgrConn:Disconnect() end
-	camMgrConn = nil
+	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
 
 	local cam = Workspace.CurrentCamera
 	local plr = Players.LocalPlayer
@@ -304,84 +236,82 @@ local function StopCameraStabilize()
 		if prevCamType ~= nil then cam.CameraType = prevCamType end
 		if prevCamSubject ~= nil then cam.CameraSubject = prevCamSubject end
 	end
-
 	if plr and prevOcclusionMode ~= nil then
 		pcall(function()
 			plr.DevCameraOcclusionMode = prevOcclusionMode
 		end)
 	end
 
-	prevCamType, prevCamSubject, prevOcclusionMode = nil, nil, nil
+	prevOcclusionMode, prevCamType, prevCamSubject = nil, nil, nil
 	camApplied = false
-
-	if camProxy then
-		pcall(function() camProxy:Destroy() end)
-	end
-	camProxy = nil
-
-	proxySmoothCF = nil
-	proxyLastT = 0
 end
 
 local function StartCameraStabilize()
-	if not Settings.CameraStabilize then
-		StopCameraStabilize()
-		return
-	end
+	if not Settings.CameraStabilize then StopCameraStabilize() return end
 	if camApplied then return end
 
 	local cam = Workspace.CurrentCamera
 	local plr = Players.LocalPlayer
 	if not (cam and plr) then return end
 
-	-- save original
+	prevOcclusionMode = plr.DevCameraOcclusionMode
 	prevCamType = cam.CameraType
 	prevCamSubject = cam.CameraSubject
-	prevOcclusionMode = plr.DevCameraOcclusionMode
 
-	-- keep default camera feel
+	-- Default feel
 	cam.CameraType = Enum.CameraType.Custom
+	local hum = GetHumanoid()
+	if hum then cam.CameraSubject = hum end
 
-	BindCamProxy()
+	-- Anti-guncang saat mining: Invisicam only when mining [page:1]
+	if IsMiningState() then
+		pcall(function()
+			plr.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+		end)
+	end
+
 	camApplied = true
+end
 
-	local lastMining = nil
-	camMgrConn = RunService.Heartbeat:Connect(function()
-		local cam2 = Workspace.CurrentCamera
-		local plr2 = Players.LocalPlayer
-		if not (cam2 and plr2) then return end
+local camStateConn = nil
+local lastMining = nil
+
+local function StartCameraStateManager()
+	if camStateConn then return end
+	camStateConn = RunService.Heartbeat:Connect(function()
 		if not camApplied then return end
+
+		local cam = Workspace.CurrentCamera
+		local plr = Players.LocalPlayer
+		if not (cam and plr) then return end
 
 		local mining = IsMiningState()
 		if mining ~= lastMining then
 			lastMining = mining
 
+			cam.CameraType = Enum.CameraType.Custom
+			local hum = GetHumanoid()
+			if hum then cam.CameraSubject = hum end
+
 			if mining then
-				cam2.CameraType = Enum.CameraType.Custom
-				cam2.CameraSubject = EnsureCamProxy()
 				pcall(function()
-					plr2.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+					plr.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
 				end)
 			else
-				cam2.CameraType = Enum.CameraType.Custom
-				local hum = GetHumanoid()
-				if hum then
-					cam2.CameraSubject = hum
-				elseif prevCamSubject ~= nil then
-					cam2.CameraSubject = prevCamSubject
-				end
 				if prevOcclusionMode ~= nil then
 					pcall(function()
-						plr2.DevCameraOcclusionMode = prevOcclusionMode
+						plr.DevCameraOcclusionMode = prevOcclusionMode
 					end)
 				end
 			end
 		end
-
-		if mining and cam2.CameraSubject ~= camProxy then
-			cam2.CameraSubject = EnsureCamProxy()
-		end
 	end)
+end
+
+local function StopCameraStateManager()
+	if camStateConn then camStateConn:Disconnect() end
+	camStateConn = nil
+	lastMining = nil
 end
 
 -- ========= [7] TOOL & TARGET LOGIC =========
@@ -398,24 +328,15 @@ local function HitPickaxe()
 	local now = os.clock()
 	if (now - lastHit) < (Settings.HitInterval or 0.15) then return end
 	lastHit = now
-
 	if not toolActivatedRF then ResolveToolActivated() end
-	task.spawn(function()
-		pcall(function()
-			toolActivatedRF:InvokeServer("Pickaxe")
-		end)
-	end)
+	task.spawn(function() pcall(function() toolActivatedRF:InvokeServer("Pickaxe") end) end)
 end
 
 local function IsRockValid(rockModel)
 	local hp = rockModel:GetAttribute("Health")
 	if hp and hp <= 0 then return false end
-
 	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
-	if ((hp or maxHP)/maxHP)*100 > (Settings.CheckThreshold or 45) then
-		return true
-	end
-
+	if ((hp or maxHP)/maxHP)*100 > (Settings.CheckThreshold or 45) then return true end
 	for _, c in ipairs(rockModel:GetChildren()) do
 		if c.Name == "Ore" and Settings.Ores[c:GetAttribute("Ore") or ""] then return true end
 	end
@@ -450,9 +371,8 @@ local function GetBestTargetPart()
 	return cl
 end
 
--- ========= [8] MOVEMENT ENGINE (TWEEN + NOCLIP STATE + LOCK) =========
+-- ========= [8] MOVEMENT ENGINE (LOOKAT + OFFSET) =========
 local activeTween = nil
-
 local function TweenToPart(targetPart)
 	local _, r = GetCharAndRoot()
 	if not (r and targetPart and targetPart.Parent) then return end
@@ -482,10 +402,11 @@ task.spawn(function()
 	local lastScan, lockedTarget, lockedUntil = 0, nil, 0
 	while _G.FarmLoop do
 		task.wait(0.05)
-
 		if Settings.AutoFarm then
 			enableNoclip()
+
 			StartCameraStabilize()
+			StartCameraStateManager()
 
 			local _, r = GetCharAndRoot()
 			if r then
@@ -506,12 +427,14 @@ task.spawn(function()
 			end
 		else
 			StopLock()
+			StopCameraStateManager()
 			StopCameraStabilize()
 			disableNoclip()
 		end
 	end
 
 	StopLock()
+	StopCameraStateManager()
 	StopCameraStabilize()
 	disableNoclip()
 end)
