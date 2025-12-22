@@ -1,12 +1,11 @@
 --// ==========================================================
---// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (CAMERA FIX)
+--// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (GHOST MODE FIX)
 --// ==========================================================
---// Status: FINAL (Camera Logic Outside Loop)
+--// Status: FINAL (Raycast Passthrough Fix)
 --// Features:
---// - Position: -6 Studs (Under Rock) via Settings.YOffset
---// - Rotation: LookAt (Mendongak ke atas)
+--// - Position: -4 Studs (Under Rock)
+--// - Physics: Ghost Mode (CanCollide/Touch/Query = FALSE) -> Fixes "Body Block"
 --// - Stability: Camera Logic Initialized ONCE (Passive Monitor)
---// - Physics: Constant Noclip & Drift-Checked Hard Lock (PreSimulation)
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -58,7 +57,7 @@ end
 
 setDefault("AutoFarm", false)
 setDefault("TweenSpeed", 40)
-setDefault("YOffset", -6)
+setDefault("YOffset", -4)
 setDefault("CheckThreshold", 45)
 setDefault("ScanInterval", 0.25)
 setDefault("HitInterval", 0.15)
@@ -91,19 +90,23 @@ local function GetHumanoid()
 	return c and c:FindFirstChildOfClass("Humanoid")
 end
 
--- ========= [4] NOCLIP ENGINE (STATE-BASED) =========
+-- ========= [4] NOCLIP ENGINE (GHOST MODE: QUERY/TOUCH/COLLIDE) =========
 local noclipConn, descConn
 local partsSet = {}
-local originalCollide = {}
+local originalStates = {} -- Stores {CanCollide, CanTouch, CanQuery}
 
 local function cacheCharacterParts(c)
 	table.clear(partsSet)
-	table.clear(originalCollide)
+	table.clear(originalStates)
 	if not c then return end
 	for _, inst in ipairs(c:GetDescendants()) do
 		if inst:IsA("BasePart") then
 			partsSet[inst] = true
-			originalCollide[inst] = inst.CanCollide
+			originalStates[inst] = {
+				CanCollide = inst.CanCollide,
+				CanTouch = inst.CanTouch,
+				CanQuery = inst.CanQuery
+			}
 		end
 	end
 end
@@ -119,6 +122,8 @@ local function enableNoclip()
 			if inst:IsA("BasePart") then
 				partsSet[inst] = true
 				inst.CanCollide = false
+				inst.CanTouch = false
+				inst.CanQuery = false -- [FIX] Invisible to Raycasts
 			end
 		end)
 	end
@@ -127,6 +132,8 @@ local function enableNoclip()
 		for part in pairs(partsSet) do
 			if part and part.Parent then
 				part.CanCollide = false
+				part.CanTouch = false
+				part.CanQuery = false -- [FIX] Force Ghost Mode
 			else
 				partsSet[part] = nil
 			end
@@ -139,11 +146,15 @@ local function disableNoclip()
 	if descConn then descConn:Disconnect() end
 	noclipConn, descConn = nil, nil
 
-	for part, was in pairs(originalCollide) do
-		if part and part.Parent then part.CanCollide = was end
+	for part, states in pairs(originalStates) do
+		if part and part.Parent then 
+			part.CanCollide = states.CanCollide
+			part.CanTouch = states.CanTouch
+			part.CanQuery = states.CanQuery
+		end
 	end
 	table.clear(partsSet)
-	table.clear(originalCollide)
+	table.clear(originalStates)
 end
 
 -- ========= [5] HARD LOCK (PreSimulation Drift-Check) =========
@@ -171,6 +182,16 @@ end
 
 local function StartLock(rootPart, cf)
 	if not Settings.LockToTarget then StopLock() return end
+
+	-- [FIX] Force Ghost Mode immediately on Lock Start
+	-- Ensure the body doesn't block the very first hit
+	for _, v in ipairs(rootPart.Parent:GetDescendants()) do
+		if v:IsA("BasePart") then
+			v.CanCollide = false
+			v.CanTouch = false
+			v.CanQuery = false
+		end
+	end
 
 	if lockConn and lockRoot == rootPart then
 		lockCFrame = cf
@@ -226,7 +247,6 @@ local prevCamSubject = nil
 
 local function IsMiningState()
 	if not Settings.AutoFarm then return false end
-	-- Cek apakah Lock aktif
 	return (lockConn ~= nil and lockRoot ~= nil and lockCFrame ~= nil)
 end
 
@@ -287,7 +307,6 @@ local function StartCameraStateManager()
 		local plr = Players.LocalPlayer
 		if not (cam and plr) then return end
 
-		-- Monitor state perubahan secara pasif, tidak dipicu loop farm
 		local mining = IsMiningState()
 		if mining ~= lastMining then
 			lastMining = mining
@@ -381,13 +400,12 @@ local function TweenToPart(targetPart)
 	if not (r and targetPart and targetPart.Parent) then return end
 
 	local rockPos = targetPart.Position
-	local targetPos = rockPos + Vector3.new(0, tonumber(Settings.YOffset) or -6, 0)
+	local targetPos = rockPos + Vector3.new(0, tonumber(Settings.YOffset) or -4, 0)
 	local lookAtCF = CFrame.lookAt(targetPos, rockPos)
 
 	local dist = (r.Position - targetPos).Magnitude
 	
-	-- Logic: Jika dekat, kunci saja. Tidak perlu urus kamera (kamera urus dirinya sendiri)
-	if dist < 2 then
+	if dist < 0.5 then
 		if not lockConn then 
 			StartLock(r, lookAtCF)
 		else
@@ -408,7 +426,6 @@ local function TweenToPart(targetPart)
 
 	if Settings.AutoFarm then
 		StartLock(r, lookAtCF)
-		-- StartCameraStabilize() <-- DIHAPUS (sudah berjalan di luar)
 	end
 end
 
@@ -416,7 +433,6 @@ end
 task.spawn(function()
 	local lastScan, lockedTarget, lockedUntil = 0, nil, 0
 	
-	-- [PERBAIKAN] Inisialisasi Kamera DI LUAR Loop
 	if Settings.AutoFarm then
 		StartCameraStabilize()
 		StartCameraStateManager()
@@ -426,9 +442,6 @@ task.spawn(function()
 		task.wait(0.05)
 		if Settings.AutoFarm then
 			enableNoclip()
-			
-			-- StartCameraStabilize() <-- DIHAPUS
-			-- StartCameraStateManager() <-- DIHAPUS
 
 			local _, r = GetCharAndRoot()
 			if r then
@@ -461,4 +474,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: CAMERA LOOP FIXED (PASSIVE STABILIZATION)")
+print("[✓] FORGE CORE: HITBOX FIX (GHOST MODE ON - CanQuery: FALSE)")
