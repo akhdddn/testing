@@ -1,13 +1,11 @@
 --// ==========================================================
---// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (LOGIC REWORK)
+--// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (NO AUTO-EQUIP)
 --// ==========================================================
---// Status: FINAL (Ownership Logic + Predictive Kill + Path Fix)
---// Path: Workspace.Rocks.Zone.SpawnLocation.Rock.Ore
+--// Status: FINAL (Slider Support + Removed Auto Equip)
 --// Features:
---// - Ownership: Respects "LastHitPlayer" (Anti-KillSteal)
---// - Prediction: Moves immediately when Health <= 0
---// - Ore Logic: Targets specific Ore Models inside Rock
---// - Physics: Ghost Mode (CanQuery=False)
+--// - Slider Ready: Mining triggers when player reaches Settings.YOffset position
+--// - Removed: Auto Equip Function
+--// - Physics: Ghost Mode + Smart Lock
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -87,6 +85,8 @@ local function GetHumanoid()
 	local c = Players.LocalPlayer.Character
 	return c and c:FindFirstChildOfClass("Humanoid")
 end
+
+-- [REMOVED] Auto Equip function deleted as requested
 
 -- ========= [4] NOCLIP ENGINE (GHOST MODE) =========
 local noclipConn, descConn
@@ -181,7 +181,7 @@ end
 local function StartLock(rootPart, cf)
 	if not Settings.LockToTarget then StopLock() return end
 
-	-- Force Ghost Mode for immediate hit registration
+	-- Force Ghost Mode
 	for _, v in ipairs(rootPart.Parent:GetDescendants()) do
 		if v:IsA("BasePart") then
 			v.CanCollide = false
@@ -333,7 +333,7 @@ local function StopCameraStateManager()
 	lastMining = nil
 end
 
--- ========= [7] TARGET LOGIC (OWNERSHIP + ORE PREDICTION) =========
+-- ========= [7] TARGET LOGIC =========
 local toolActivatedRF = nil
 local lastHit = 0
 
@@ -347,28 +347,30 @@ local function HitPickaxe()
 	local now = os.clock()
 	if (now - lastHit) < (Settings.HitInterval or 0.15) then return end
 	lastHit = now
+	
 	if not toolActivatedRF then ResolveToolActivated() end
-	task.spawn(function() pcall(function() toolActivatedRF:InvokeServer("Pickaxe") end) end)
+	if toolActivatedRF then
+		task.spawn(function() 
+			pcall(function() toolActivatedRF:InvokeServer("Pickaxe") end) 
+		end)
+	end
 end
 
 local function IsRockValid(rockModel, anyOreSelected, anyRockSelected)
-	-- [RULE 1]: OWNERSHIP CHECK (Anti-Steal)
-	-- Jika LastHitPlayer ada isinya DAN bukan kita, berarti milik orang lain.
+	-- [RULE 1]: OWNERSHIP CHECK
 	local owner = rockModel:GetAttribute("LastHitPlayer")
 	if owner and owner ~= Players.LocalPlayer.Name then
-		return false -- Milik orang lain, minggir.
+		return false
 	end
 
 	-- [RULE 2]: HEALTH PREDICTION
 	local hp = rockModel:GetAttribute("Health")
-	if hp and hp <= 0 then return false end -- Sudah mati (tapi model belum hilang)
+	if hp and hp <= 0 then return false end
 
-	-- [RULE 3]: STRICT ORE FILTER (Children Scan)
+	-- [RULE 3]: STRICT ORE FILTER
 	if anyOreSelected then
 		local hasTargetOre = false
-		-- Ore muncul sebagai Model anak dari Rock
 		for _, child in ipairs(rockModel:GetChildren()) do
-			-- Cek apakah anak ini adalah Ore yang valid
 			if child.Name == "Ore" and child:IsA("Model") then
 				local oreName = child:GetAttribute("Ore")
 				if oreName and Settings.Ores[oreName] then
@@ -377,12 +379,7 @@ local function IsRockValid(rockModel, anyOreSelected, anyRockSelected)
 				end
 			end
 		end
-		
-		if hasTargetOre then
-			return true -- Ketemu Ore yang dicari
-		else
-			return false -- Ore tidak ada (atau belum muncul karena HP > 45%)
-		end
+		if hasTargetOre then return true else return false end
 	end
 
 	-- [RULE 4]: STRICT ROCK FILTER
@@ -390,7 +387,7 @@ local function IsRockValid(rockModel, anyOreSelected, anyRockSelected)
 		return Settings.Rocks[rockModel.Name] == true
 	end
 
-	-- [RULE 5]: DEFAULT MODE (Threshold)
+	-- [RULE 5]: DEFAULT MODE
 	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
 	if ((hp or maxHP)/maxHP)*100 > (Settings.CheckThreshold or 45) then return true end
 	
@@ -403,26 +400,19 @@ local function GetBestTargetPart()
 	local rocksFolder = Workspace:FindFirstChild("Rocks")
 	if not rocksFolder then return nil end
 
-	-- Recalculate Flags
 	local anyZ = false
 	for _, v in pairs(Settings.Zones) do if v then anyZ = true break end end
-	
 	local anyR = false
 	for _, v in pairs(Settings.Rocks) do if v then anyR = true break end end
-	
 	local anyO = false
 	for _, v in pairs(Settings.Ores) do if v then anyO = true break end end
 
 	local cl, md = nil, math.huge
 	
-	-- Traverse Path: Workspace.Rocks.(Zone).(SpawnLocation).(Rock)
 	for _, zone in ipairs(rocksFolder:GetChildren()) do
 		if zone:IsA("Folder") and (not anyZ or Settings.Zones[zone.Name]) then
-			-- GetDescendants handles the 'SpawnLocation' folder layer automatically
 			for _, inst in ipairs(zone:GetDescendants()) do
-				-- Targetting the ROCK Model
-				if inst:IsA("Model") and inst.Parent.Name ~= "Rock" then -- Ensure we aren't targeting the Ore model itself, but the Rock
-					-- Cek apakah ini Rock yang valid?
+				if inst:IsA("Model") and inst.Parent.Name ~= "Rock" then 
 					if IsRockValid(inst, anyO, anyR) then
 						local p = inst.PrimaryPart or inst:FindFirstChild("Hitbox") or inst:FindFirstChildWhichIsA("BasePart")
 						if p then
@@ -437,19 +427,25 @@ local function GetBestTargetPart()
 	return cl
 end
 
--- ========= [8] MOVEMENT ENGINE =========
+-- ========= [8] MOVEMENT ENGINE (SLIDER SUPPORT) =========
 local activeTween = nil
 local function TweenToPart(targetPart)
 	local _, r = GetCharAndRoot()
 	if not (r and targetPart and targetPart.Parent) then return end
 
 	local rockPos = targetPart.Position
+	-- Dynamic YOffset taken directly from Settings (Slider)
 	local targetPos = rockPos + Vector3.new(0, tonumber(Settings.YOffset) or -4, 0)
 	local lookAtCF = CFrame.lookAt(targetPos, rockPos)
 
+	-- Jarak antara Player dan Posisi Tujuan (sesuai offset slider)
 	local dist = (r.Position - targetPos).Magnitude
 	
-	if dist < 4 then
+	-- [FIX]: Gunakan toleransi standar (3 studs).
+	-- Karena 'dist' adalah jarak ke Posisi Tujuan (bukan ke batu), 
+	-- maka berapapun slider YOffset yang Anda set (-5 atau -20),
+	-- jika player sudah sampai di titik itu, dist akan mendekati 0.
+	if dist < 3 then
 		if not lockConn then 
 			StartLock(r, lookAtCF)
 		else
@@ -473,7 +469,7 @@ local function TweenToPart(targetPart)
 	end
 end
 
--- ========= [9] MAIN EXECUTION LOOP (SMART PREDICTION) =========
+-- ========= [9] MAIN EXECUTION LOOP =========
 task.spawn(function()
 	local lastScan, lockedTarget, lockedUntil = 0, nil, 0
 	
@@ -483,56 +479,54 @@ task.spawn(function()
 	end
 	
 	while _G.FarmLoop do
-		task.wait(0.05) -- Fast Loop
-		if Settings.AutoFarm then
-			enableNoclip()
+		task.wait(0.05)
+		
+		pcall(function()
+			if Settings.AutoFarm then
+				enableNoclip()
+				-- [REMOVED] No Auto Equip
 
-			local _, r = GetCharAndRoot()
-			if r then
-				local now = os.clock()
-				
-				-- 1. Scan / Rescan Target
-				if not (lockedTarget and lockedTarget.Parent) or now >= lockedUntil then
-					if now - lastScan >= (Settings.ScanInterval or 0.25) then
-						lastScan = now
-						lockedTarget = GetBestTargetPart()
-						lockedUntil = now + (Settings.TargetStickTime or 0.35)
-					end
-				end
-
-				-- 2. Attack & Monitor Loop
-				if lockedTarget and lockedTarget.Parent then
-					TweenToPart(lockedTarget)
+				local _, r = GetCharAndRoot()
+				if r then
+					local now = os.clock()
 					
-					local m = lockedTarget:FindFirstAncestorOfClass("Model")
-					if m then
-						-- [PREDICTION & OWNERSHIP LIVE CHECK]
-						local hp = m:GetAttribute("Health") or 0
-						local owner = m:GetAttribute("LastHitPlayer")
+					-- 1. Scan Target
+					if not (lockedTarget and lockedTarget.Parent) or now >= lockedUntil then
+						if now - lastScan >= (Settings.ScanInterval or 0.25) then
+							lastScan = now
+							lockedTarget = GetBestTargetPart()
+							lockedUntil = now + (Settings.TargetStickTime or 0.35)
+						end
+					end
+
+					-- 2. Attack
+					if lockedTarget and lockedTarget.Parent then
+						TweenToPart(lockedTarget)
 						
-						-- Cek Kematian (Predictive Zero)
-						if hp <= 0 then
-							-- Target mati/akan mati -> Paksa reset target instan
-							lockedTarget = nil
-							lockedUntil = 0 
-						-- Cek Rebutan (Lost Ownership)
-						elseif owner and owner ~= Players.LocalPlayer.Name then
-							-- Target direbut orang -> Paksa reset target instan
-							lockedTarget = nil
-							lockedUntil = 0
-						else
-							-- Aman -> Pukul
-							HitPickaxe()
+						local m = lockedTarget:FindFirstAncestorOfClass("Model")
+						if m then
+							local hp = m:GetAttribute("Health") or 0
+							local owner = m:GetAttribute("LastHitPlayer")
+							
+							if hp <= 0 then
+								lockedTarget = nil
+								lockedUntil = 0 
+							elseif owner and owner ~= Players.LocalPlayer.Name then
+								lockedTarget = nil
+								lockedUntil = 0
+							else
+								HitPickaxe()
+							end
 						end
 					end
 				end
+			else
+				StopLock()
+				StopCameraStateManager()
+				StopCameraStabilize()
+				disableNoclip()
 			end
-		else
-			StopLock()
-			StopCameraStateManager()
-			StopCameraStabilize()
-			disableNoclip()
-		end
+		end)
 	end
 
 	StopLock()
@@ -541,4 +535,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: OWNERSHIP LOGIC + PREDICTIVE KILL ACTIVE")
+print("[✓] FORGE CORE: SLIDER SUPPORT (NO AUTO EQUIP)")
