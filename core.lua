@@ -1,9 +1,12 @@
 --// ==========================================================
---// THE FORGE CORE: FINAL REQUEST (SPECIFIC REMOTE PATH)
+--// THE FORGE CORE: SMART MINER (REVEAL & FILTER)
 --// ==========================================================
 --// Status: FINAL
---// Change: HitPickaxe uses the specific long path & args provided by user.
---// Logic: Direct InvokeServer with {"Pickaxe"} args.
+--// Logic Update:
+--// 1. Fresh Rock (>45%): MINE IT (To reveal the ore).
+--// 2. Opened Rock (<45%): CHECK IT. 
+--//    - If Ore matches filter -> Finish it.
+--//    - If Ore wrong -> Leave it immediately.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -329,7 +332,7 @@ local function StopCameraStateManager()
 	lastMining = nil
 end
 
--- ========= [7] TARGET LOGIC (UPDATED WITH YOUR CODE) =========
+-- ========= [7] TARGET LOGIC (REVEAL + FILTER) =========
 local lastHit = 0
 
 local function HitPickaxe()
@@ -337,13 +340,11 @@ local function HitPickaxe()
 	if (now - lastHit) < (Settings.HitInterval or 0.15) then return end
 	lastHit = now
 	
-	-- [UPDATED] Menggunakan kode spesifik yang Anda minta
 	local args = {
 		"Pickaxe"
 	}
 
 	task.spawn(function()
-		-- Dibungkus pcall agar jika terjadi error jaringan, script tidak stop total
 		pcall(function() 
 			game:GetService("ReplicatedStorage")
 				:WaitForChild("Shared")
@@ -359,41 +360,59 @@ local function HitPickaxe()
 end
 
 local function IsRockValid(rockModel, anyOreSelected, anyRockSelected)
-	-- [RULE 1]: OWNERSHIP CHECK
+	-- 1. Anti-KS
 	local owner = rockModel:GetAttribute("LastHitPlayer")
 	if owner and owner ~= Players.LocalPlayer.Name then
 		return false
 	end
 
-	-- [RULE 2]: HEALTH PREDICTION
+	-- 2. Dead Check
 	local hp = rockModel:GetAttribute("Health")
 	if hp and hp <= 0 then return false end
+	
+	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
+	local hpPercent = ((hp or maxHP)/maxHP)*100
+	local isRevealed = hpPercent <= 45
 
-	-- [RULE 3]: STRICT ORE FILTER
-	if anyOreSelected then
-		local hasTargetOre = false
-		for _, child in ipairs(rockModel:GetChildren()) do
-			if child.Name == "Ore" and child:IsA("Model") then
-				local oreName = child:GetAttribute("Ore")
-				if oreName and Settings.Ores[oreName] then
-					hasTargetOre = true
-					break
+	-- [LOGIKA PINTAR: REVEAL & FILTER]
+	
+	if isRevealed then
+		-- A. JIKA BATU SUDAH TERBUKA (Isi Kelihatan)
+		if anyOreSelected then
+			-- Cek apakah isinya sesuai filter Ore?
+			local hasTargetOre = false
+			for _, child in ipairs(rockModel:GetChildren()) do
+				if child.Name == "Ore" and child:IsA("Model") then
+					local oreName = child:GetAttribute("Ore")
+					if oreName and Settings.Ores[oreName] then
+						hasTargetOre = true
+						break
+					end
 				end
 			end
+			-- Kalau isinya BUKAN target kita, TINGGALKAN.
+			if not hasTargetOre then return false end
 		end
-		if hasTargetOre then return true else return false end
-	end
+		
+		-- Filter Rock Name (Secondary Check)
+		if anyRockSelected then
+			if not Settings.Rocks[rockModel.Name] then return false end
+		end
 
-	-- [RULE 4]: STRICT ROCK FILTER
-	if anyRockSelected then
-		return Settings.Rocks[rockModel.Name] == true
-	end
+		return true -- Valid (Sesuai Ore atau Sesuai Rock)
 
-	-- [RULE 5]: DEFAULT MODE
-	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
-	if ((hp or maxHP)/maxHP)*100 > (Settings.CheckThreshold or 45) then return true end
-	
-	return false
+	else
+		-- B. JIKA BATU MASIH TERTUTUP (HP > 45%)
+		-- Pukul saja untuk melihat isinya (Gacha), KECUALI user memfilter Nama Batu.
+		
+		if anyRockSelected then
+			-- User spesifik hanya mau pukul 'Basalt'? Cek nama.
+			return Settings.Rocks[rockModel.Name] == true
+		end
+		
+		-- Jika tidak ada filter nama batu, pukul batu apa saja yg fresh.
+		return true 
+	end
 end
 
 local function GetBestTargetPart()
@@ -441,7 +460,6 @@ local function TweenToPart(targetPart)
 
 	local dist = (r.Position - targetPos).Magnitude
 	
-	-- Deadzone logic: < 8 Studs = SNAP (No Tween)
 	if dist < 8 then
 		if not lockConn then 
 			StartLock(r, lookAtCF)
@@ -501,17 +519,35 @@ task.spawn(function()
 						
 						local m = lockedTarget:FindFirstAncestorOfClass("Model")
 						if m then
+							-- Live Check saat sedang memukul
 							local hp = m:GetAttribute("Health") or 0
 							local owner = m:GetAttribute("LastHitPlayer")
 							
+							-- Cek jika sudah mati
 							if hp <= 0 then
 								lockedTarget = nil
 								lockedUntil = 0 
+							-- Cek jika direbut orang
 							elseif owner and owner ~= Players.LocalPlayer.Name then
 								lockedTarget = nil
 								lockedUntil = 0
+							-- [SMART CHECK]: Cek jika Ore sudah keluar TAPI salah jenis
+							elseif anyO then
+								local maxHP = m:GetAttribute("MaxHealth") or 100
+								if ((hp/maxHP)*100 <= 45) then
+									-- Batu sudah kebuka, cek isinya valid gak?
+									if not IsRockValid(m, anyO, anyR) then
+										-- Isi SALAH -> Tinggalkan instan
+										lockedTarget = nil
+										lockedUntil = 0
+									else
+										HitPickaxe()
+									end
+								else
+									HitPickaxe() -- Masih tertutup, lanjut pukul
+								end
 							else
-								HitPickaxe() -- Menggunakan kode InvokeServer spesifik Anda
+								HitPickaxe()
 							end
 						end
 					end
@@ -531,4 +567,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: UPDATED WITH SPECIFIC REMOTE PATH")
+print("[✓] FORGE CORE: SMART MINER (REVEAL -> CHECK -> FILTER/LEAVE)")
