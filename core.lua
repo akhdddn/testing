@@ -1,8 +1,9 @@
 --// ==========================================================
---// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (CLEAN VERSION)
+--// THE FORGE CORE: FINAL REQUEST (SPECIFIC REMOTE PATH)
 --// ==========================================================
---// Status: FINAL (No Debug / No Checks)
---// Logic: Direct Execution. Assumes Remote & Tool are valid.
+--// Status: FINAL
+--// Change: HitPickaxe uses the specific long path & args provided by user.
+--// Logic: Direct InvokeServer with {"Pickaxe"} args.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -328,30 +329,33 @@ local function StopCameraStateManager()
 	lastMining = nil
 end
 
--- ========= [7] TARGET LOGIC =========
-local toolActivatedRF = nil
+-- ========= [7] TARGET LOGIC (UPDATED WITH YOUR CODE) =========
 local lastHit = 0
-
-local function ResolveToolActivated()
-	-- Direct path as requested
-	pcall(function()
-		toolActivatedRF = ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated
-	end)
-end
 
 local function HitPickaxe()
 	local now = os.clock()
 	if (now - lastHit) < (Settings.HitInterval or 0.15) then return end
 	lastHit = now
 	
-	if not toolActivatedRF then ResolveToolActivated() end
-	
-	-- Unconditional Fire
-	if toolActivatedRF then
-		task.spawn(function() 
-			pcall(function() toolActivatedRF:InvokeServer("Pickaxe") end) 
+	-- [UPDATED] Menggunakan kode spesifik yang Anda minta
+	local args = {
+		"Pickaxe"
+	}
+
+	task.spawn(function()
+		-- Dibungkus pcall agar jika terjadi error jaringan, script tidak stop total
+		pcall(function() 
+			game:GetService("ReplicatedStorage")
+				:WaitForChild("Shared")
+				:WaitForChild("Packages")
+				:WaitForChild("Knit")
+				:WaitForChild("Services")
+				:WaitForChild("ToolService")
+				:WaitForChild("RF")
+				:WaitForChild("ToolActivated")
+				:InvokeServer(unpack(args))
 		end)
-	end
+	end)
 end
 
 local function IsRockValid(rockModel, anyOreSelected, anyRockSelected)
@@ -437,6 +441,7 @@ local function TweenToPart(targetPart)
 
 	local dist = (r.Position - targetPos).Magnitude
 	
+	-- Deadzone logic: < 8 Studs = SNAP (No Tween)
 	if dist < 8 then
 		if not lockConn then 
 			StartLock(r, lookAtCF)
@@ -506,7 +511,7 @@ task.spawn(function()
 								lockedTarget = nil
 								lockedUntil = 0
 							else
-								HitPickaxe()
+								HitPickaxe() -- Menggunakan kode InvokeServer spesifik Anda
 							end
 						end
 					end
@@ -526,4 +531,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: CLEAN VERSION (DIRECT HIT)")
+print("[✓] FORGE CORE: UPDATED WITH SPECIFIC REMOTE PATH")
