@@ -5,7 +5,7 @@
 --// Features:
 --// - Position: -6 Studs (Under Rock) via Settings.YOffset
 --// - Rotation: LookAt (Mendongak ke atas)
---// - Stability: Default Camera (Custom) + Mining Camera Stabilizer
+--// - Stability: Default Camera (Custom) + Subject Proxy Stabilizer
 --// - Physics: Constant Noclip & Hard Lock
 
 local Players = game:GetService("Players")
@@ -201,38 +201,72 @@ local function StartLock(rootPart, cf)
 	end)
 end
 
--- ========= [6] CAMERA ANTI-GUNCANG (REBUILD, DEFAULT FEEL) =========
--- Target:
--- - Kamera tetap seperti default (geser/rotate/zoom normal).
--- - Saat mining/lock, hilangkan guncang dengan:
---   A) subject dipindah ke HRP (yang kamu lock, jadi stabil)
---   B) occlusion jadi Invisicam saat mining (menghindari push/zoom collision camera)
+-- ========= [6] CAMERA ANTI-GUNCANG (REBUILD: SUBJECT PROXY) =========
+-- Kamera tetap default (Custom) agar bisa digeser/rotate/zoom seperti biasa.
+-- Anti-guncang saat mining dilakukan dengan mengganti CameraSubject ke "proxy part"
+-- yang CFrame-nya diset ke lockCFrame tepat sebelum frame kamera diproses.
 
 local camMgrConn = nil
-local camEnabled = false
+local camBound = false
+local camApplied = false
 
 local prevCamType = nil
 local prevCamSubject = nil
 local prevOcclusionMode = nil
 
-local lastMiningState = nil
+local camProxy = nil
+
+local function EnsureCamProxy()
+	if camProxy and camProxy.Parent then return camProxy end
+	local p = Instance.new("Part")
+	p.Name = "Forge_CameraProxy"
+	p.Anchored = true
+	p.CanCollide = false
+	p.Transparency = 1
+	p.Size = Vector3.new(1, 1, 1)
+	p.Parent = Workspace
+	camProxy = p
+	return camProxy
+end
 
 local function IsMiningState()
 	if not Settings.AutoFarm then return false end
 	return (lockConn ~= nil and lockRoot ~= nil and lockCFrame ~= nil)
 end
 
-local function SaveCameraStateIfNeeded()
-	local cam = Workspace.CurrentCamera
-	local plr = Players.LocalPlayer
-	if not (cam and plr) then return end
-
-	if prevCamType == nil then prevCamType = cam.CameraType end
-	if prevCamSubject == nil then prevCamSubject = cam.CameraSubject end
-	if prevOcclusionMode == nil then prevOcclusionMode = plr.DevCameraOcclusionMode end
+local function UnbindCamProxy()
+	if camBound then
+		pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
+		camBound = false
+	end
 end
 
-local function RestoreCameraState()
+local function BindCamProxy()
+	if camBound then return end
+	UnbindCamProxy()
+
+	-- Update proxy 1 step sebelum kamera (agar kamera membaca posisi terbaru)
+	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value - 1, function()
+		if not camApplied then return end
+		local _, r = GetCharAndRoot()
+		if not r then return end
+
+		local proxy = EnsureCamProxy()
+		if IsMiningState() and lockCFrame then
+			proxy.CFrame = lockCFrame
+		else
+			proxy.CFrame = r.CFrame
+		end
+	end)
+
+	camBound = true
+end
+
+local function StopCameraStabilize()
+	UnbindCamProxy()
+	if camMgrConn then camMgrConn:Disconnect() end
+	camMgrConn = nil
+
 	local cam = Workspace.CurrentCamera
 	local plr = Players.LocalPlayer
 
@@ -246,58 +280,14 @@ local function RestoreCameraState()
 			plr.DevCameraOcclusionMode = prevOcclusionMode
 		end)
 	end
-end
 
-local function ApplyNormalCamera()
-	local cam = Workspace.CurrentCamera
-	if not cam then return end
+	prevCamType, prevCamSubject, prevOcclusionMode = nil, nil, nil
+	camApplied = false
 
-	cam.CameraType = Enum.CameraType.Custom
-
-	-- balik ke humanoid untuk rasa kamera default (kalau ada)
-	local hum = GetHumanoid()
-	if hum then
-		cam.CameraSubject = hum
-	elseif prevCamSubject ~= nil then
-		cam.CameraSubject = prevCamSubject
+	if camProxy then
+		pcall(function() camProxy:Destroy() end)
 	end
-end
-
-local function ApplyMiningCamera()
-	local cam = Workspace.CurrentCamera
-	local plr = Players.LocalPlayer
-	if not (cam and plr) then return end
-
-	cam.CameraType = Enum.CameraType.Custom
-
-	-- KUNCI SUBJECT KE HRP (yang sedang dilock) supaya pusat kamera stabil
-	if lockRoot and lockRoot.Parent then
-		cam.CameraSubject = lockRoot
-	end
-
-	-- Gunakan Invisicam saat mining untuk menghindari camera collision pushing/zoom
-	pcall(function()
-		plr.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
-	end)
-end
-
-local function StopCameraStabilize()
-	-- kompatibilitas saja
-	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
-
-	if camMgrConn then camMgrConn:Disconnect() end
-	camMgrConn = nil
-
-	if camEnabled then
-		RestoreCameraState()
-	end
-
-	camEnabled = false
-	lastMiningState = nil
-
-	prevCamType = nil
-	prevCamSubject = nil
-	prevOcclusionMode = nil
+	camProxy = nil
 end
 
 local function StartCameraStabilize()
@@ -305,55 +295,60 @@ local function StartCameraStabilize()
 		StopCameraStabilize()
 		return
 	end
-	if camMgrConn then return end
+	if camApplied then return end
 
 	local cam = Workspace.CurrentCamera
-	if not cam then return end
+	local plr = Players.LocalPlayer
+	if not (cam and plr) then return end
 
-	SaveCameraStateIfNeeded()
-	camEnabled = true
+	-- save original
+	prevCamType = cam.CameraType
+	prevCamSubject = cam.CameraSubject
+	prevOcclusionMode = plr.DevCameraOcclusionMode
 
-	-- Apply awal sesuai state saat ini
-	local miningNow = IsMiningState()
-	lastMiningState = miningNow
-	if miningNow then
-		ApplyMiningCamera()
-	else
-		ApplyNormalCamera()
-		-- restore occlusion normal saat tidak mining
-		local plr = Players.LocalPlayer
-		if plr and prevOcclusionMode ~= nil then
-			pcall(function()
-				plr.DevCameraOcclusionMode = prevOcclusionMode
-			end)
-		end
-	end
+	-- keep default camera feel
+	cam.CameraType = Enum.CameraType.Custom
 
-	-- Manager: hanya melakukan perubahan saat state berubah / respawn
+	BindCamProxy()
+	camApplied = true
+
+	-- manager: switch subject based on mining state (tanpa memaksa setiap frame)
+	local lastMining = nil
 	camMgrConn = RunService.Heartbeat:Connect(function()
-		if not camEnabled then return end
 		local cam2 = Workspace.CurrentCamera
-		if not cam2 then return end
+		local plr2 = Players.LocalPlayer
+		if not (cam2 and plr2) then return end
+		if not camApplied then return end
 
 		local mining = IsMiningState()
-		if mining ~= lastMiningState then
-			lastMiningState = mining
+		if mining ~= lastMining then
+			lastMining = mining
+
 			if mining then
-				ApplyMiningCamera()
+				cam2.CameraType = Enum.CameraType.Custom
+				cam2.CameraSubject = EnsureCamProxy()
+				pcall(function()
+					plr2.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+				end)
 			else
-				ApplyNormalCamera()
-				local plr = Players.LocalPlayer
-				if plr and prevOcclusionMode ~= nil then
+				cam2.CameraType = Enum.CameraType.Custom
+				local hum = GetHumanoid()
+				if hum then
+					cam2.CameraSubject = hum
+				elseif prevCamSubject ~= nil then
+					cam2.CameraSubject = prevCamSubject
+				end
+				if prevOcclusionMode ~= nil then
 					pcall(function()
-						plr.DevCameraOcclusionMode = prevOcclusionMode
+						plr2.DevCameraOcclusionMode = prevOcclusionMode
 					end)
 				end
 			end
 		end
 
-		-- Safety: kalau mining tapi subject bukan HRP (misal respawn), set lagi
-		if mining and lockRoot and cam2.CameraSubject ~= lockRoot then
-			cam2.CameraSubject = lockRoot
+		-- Safety: kalau mining dan subject bukan proxy, balikin ke proxy
+		if mining and cam2.CameraSubject ~= camProxy then
+			cam2.CameraSubject = EnsureCamProxy()
 		end
 	end)
 end
