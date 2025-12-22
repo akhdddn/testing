@@ -1,11 +1,9 @@
 --// ==========================================================
---// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (NO AUTO-EQUIP)
+--// THE FORGE CORE: ULTRA-COMPLETE INTEGRATION (LOOP FIX V2)
 --// ==========================================================
---// Status: FINAL (Slider Support + Removed Auto Equip)
---// Features:
---// - Slider Ready: Mining triggers when player reaches Settings.YOffset position
---// - Removed: Auto Equip Function
---// - Physics: Ghost Mode + Smart Lock
+--// Status: FINAL (Deadzone Logic Implemented)
+--// Fix: Removed Micro-Tweening that paused the Attack Loop
+--// Logic: If Distance < 8, SNAP instead of TWEEN.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -85,8 +83,6 @@ local function GetHumanoid()
 	local c = Players.LocalPlayer.Character
 	return c and c:FindFirstChildOfClass("Humanoid")
 end
-
--- [REMOVED] Auto Equip function deleted as requested
 
 -- ========= [4] NOCLIP ENGINE (GHOST MODE) =========
 local noclipConn, descConn
@@ -427,31 +423,29 @@ local function GetBestTargetPart()
 	return cl
 end
 
--- ========= [8] MOVEMENT ENGINE (SLIDER SUPPORT) =========
+-- ========= [8] MOVEMENT ENGINE (DEADZONE FIX) =========
 local activeTween = nil
 local function TweenToPart(targetPart)
 	local _, r = GetCharAndRoot()
 	if not (r and targetPart and targetPart.Parent) then return end
 
 	local rockPos = targetPart.Position
-	-- Dynamic YOffset taken directly from Settings (Slider)
 	local targetPos = rockPos + Vector3.new(0, tonumber(Settings.YOffset) or -4, 0)
 	local lookAtCF = CFrame.lookAt(targetPos, rockPos)
 
-	-- Jarak antara Player dan Posisi Tujuan (sesuai offset slider)
 	local dist = (r.Position - targetPos).Magnitude
 	
-	-- [FIX]: Gunakan toleransi standar (3 studs).
-	-- Karena 'dist' adalah jarak ke Posisi Tujuan (bukan ke batu), 
-	-- maka berapapun slider YOffset yang Anda set (-5 atau -20),
-	-- jika player sudah sampai di titik itu, dist akan mendekati 0.
-	if dist < 3 then
+	-- [FIX]: DEADZONE LOGIC (Toleransi 8 Studs)
+	-- Jika jarak ke titik target < 8 studs, ANGGAP SUDAH SAMPAI.
+	-- Jangan Tween lagi. Cukup Snap (StartLock) dan biarkan kode lanjut ke HitPickaxe.
+	-- Ini mencegah loop "Tween -> Stop Attack -> Tween".
+	if dist < 8 then
 		if not lockConn then 
 			StartLock(r, lookAtCF)
 		else
 			StartLock(r, lookAtCF) 
 		end
-		return
+		return -- Langsung kembali ke Loop Utama untuk memukul
 	end
 
 	StopLock()
@@ -462,7 +456,7 @@ local function TweenToPart(targetPart)
 	if activeTween then activeTween:Cancel() end
 	activeTween = TweenService:Create(r, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = lookAtCF})
 	activeTween:Play()
-	activeTween.Completed:Wait()
+	activeTween.Completed:Wait() -- Hanya Wait jika perjalanan jauh
 
 	if Settings.AutoFarm then
 		StartLock(r, lookAtCF)
@@ -484,7 +478,6 @@ task.spawn(function()
 		pcall(function()
 			if Settings.AutoFarm then
 				enableNoclip()
-				-- [REMOVED] No Auto Equip
 
 				local _, r = GetCharAndRoot()
 				if r then
@@ -501,6 +494,7 @@ task.spawn(function()
 
 					-- 2. Attack
 					if lockedTarget and lockedTarget.Parent then
+						-- TweenToPart sekarang akan return instant jika sudah dekat (Deadzone)
 						TweenToPart(lockedTarget)
 						
 						local m = lockedTarget:FindFirstAncestorOfClass("Model")
@@ -515,7 +509,7 @@ task.spawn(function()
 								lockedTarget = nil
 								lockedUntil = 0
 							else
-								HitPickaxe()
+								HitPickaxe() -- Pukulan dieksekusi lancar karena tidak ada wait di TweenToPart
 							end
 						end
 					end
@@ -535,4 +529,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: SLIDER SUPPORT (NO AUTO EQUIP)")
+print("[✓] FORGE CORE: LOOP FIXED (NO MICRO-TWEEN STUTTER)")
