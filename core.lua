@@ -5,7 +5,7 @@
 --// Features:
 --// - Position: -6 Studs (Under Rock) via Settings.YOffset
 --// - Rotation: LookAt (Mendongak ke atas)
---// - Stability: No-Shake Default Camera (Custom + Invisicam Occlusion)
+--// - Stability: Default Camera + Invisicam while Mining (NO Scriptable Camera)
 --// - Physics: Constant Noclip & Hard Lock
 
 local Players = game:GetService("Players")
@@ -201,20 +201,49 @@ local function StartLock(rootPart, cf)
 	end)
 end
 
--- ====== CAMERA: DEFAULT FEEL, NO SHAKE WHILE MINING ======
-local camStateApplied = false
+-- ========= [CAMERA ANTI GUNCANG - REBUILD] =========
+-- Tujuan:
+-- - Kamera tetap default (bisa digeser lihat kemanapun).
+-- - Anti guncang saat mining (biasanya karena occlusion mendorong kamera ketika player di bawah batu).
+-- - Tanpa Scriptable camera / tanpa model kamera sebelumnya.
+
+local camApplied = false
 local prevOcclusionMode = nil
+local prevCamType = nil
+local prevCamSubject = nil
+
+local function ApplyDefaultCameraBaseline()
+	local cam = Workspace.CurrentCamera
+	if not cam then return end
+
+	-- Pastikan kontrol kamera tetap default
+	cam.CameraType = Enum.CameraType.Custom
+
+	-- Pastikan subject kembali ke humanoid (default feel)
+	local hum = GetHumanoid()
+	if hum then
+		cam.CameraSubject = hum
+	end
+end
+
+local function IsMiningState()
+	-- “mining” di sini = AutoFarm aktif dan posisi sedang dikunci (lock hidup).
+	if not Settings.AutoFarm then return false end
+	return (lockRoot ~= nil and lockCFrame ~= nil and lockConn ~= nil)
+end
 
 local function StopCameraStabilize()
-	-- (Tetap ada unbind supaya kompatibel dengan versi sebelumnya, walaupun sekarang kamera tidak memakai BindToRenderStep)
+	-- tetap unbind (kompatibilitas), walaupun tidak dipakai
 	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
 
+	local plr = Players.LocalPlayer
 	local cam = Workspace.CurrentCamera
+
 	if cam then
-		cam.CameraType = Enum.CameraType.Custom
+		if prevCamType ~= nil then cam.CameraType = prevCamType end
+		if prevCamSubject ~= nil then cam.CameraSubject = prevCamSubject end
 	end
 
-	local plr = Players.LocalPlayer
 	if plr and prevOcclusionMode ~= nil then
 		pcall(function()
 			plr.DevCameraOcclusionMode = prevOcclusionMode
@@ -222,7 +251,9 @@ local function StopCameraStabilize()
 	end
 
 	prevOcclusionMode = nil
-	camStateApplied = false
+	prevCamType = nil
+	prevCamSubject = nil
+	camApplied = false
 end
 
 local function StartCameraStabilize()
@@ -230,30 +261,65 @@ local function StartCameraStabilize()
 		StopCameraStabilize()
 		return
 	end
-	if camStateApplied then return end
+	if camApplied then return end
 
-	local cam = Workspace.CurrentCamera
 	local plr = Players.LocalPlayer
-	if not (cam and plr) then return end
+	local cam = Workspace.CurrentCamera
+	if not (plr and cam) then return end
 
-	-- Pastikan kamera tetap "seperti default" (bisa digeser/lihat kemanapun)
-	cam.CameraType = Enum.CameraType.Custom
+	-- simpan state lama untuk restore
+	prevOcclusionMode = plr.DevCameraOcclusionMode
+	prevCamType = cam.CameraType
+	prevCamSubject = cam.CameraSubject
 
-	-- Pastikan subject kamera tetap humanoid (default behavior)
-	local hum = GetHumanoid()
-	if hum then
-		cam.CameraSubject = hum
-	end
+	-- baseline default camera feel
+	ApplyDefaultCameraBaseline()
 
-	-- Simpan dan ubah occlusion agar saat mining di bawah batu kamera tidak dipaksa zoom/geser (yang memicu guncang)
-	if prevOcclusionMode == nil then
-		prevOcclusionMode = plr.DevCameraOcclusionMode
-	end
-	pcall(function()
-		plr.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+	camApplied = true
+end
+
+-- Manager ringan: kalau mining (lock aktif) => Invisicam; kalau tidak => restore occlusion
+local camMgrConn = nil
+local occlusionForced = false
+
+local function StartCameraManager()
+	if camMgrConn then return end
+	camMgrConn = RunService.Heartbeat:Connect(function()
+		if not camApplied then return end
+
+		local plr = Players.LocalPlayer
+		if not plr then return end
+
+		-- jaga supaya camera tetap default feel walau respawn
+		ApplyDefaultCameraBaseline()
+
+		if IsMiningState() then
+			if not occlusionForced then
+				-- Invisicam: objek di antara kamera dan player dibuat transparan,
+				-- sehingga kamera tidak “dorong/zoom” saat mining di bawah batu. [page:0]
+				pcall(function()
+					plr.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+				end)
+				occlusionForced = true
+			end
+		else
+			if occlusionForced then
+				-- restore ke mode user sebelumnya saat tidak mining (tetap default feel)
+				if prevOcclusionMode ~= nil then
+					pcall(function()
+						plr.DevCameraOcclusionMode = prevOcclusionMode
+					end)
+				end
+				occlusionForced = false
+			end
+		end
 	end)
+end
 
-	camStateApplied = true
+local function StopCameraManager()
+	if camMgrConn then camMgrConn:Disconnect() end
+	camMgrConn = nil
+	occlusionForced = false
 end
 
 -- ========= [6] TOOL & TARGET LOGIC =========
@@ -304,14 +370,9 @@ local function GetBestTargetPart()
 	if not rocksFolder then return nil end
 
 	local anyZ = false
-	for _, v in pairs(Settings.Zones) do
-		if v then anyZ = true break end
-	end
-
+	for _, v in pairs(Settings.Zones) do if v then anyZ = true break end end
 	local anyR = false
-	for _, v in pairs(Settings.Rocks) do
-		if v then anyR = true break end
-	end
+	for _, v in pairs(Settings.Rocks) do if v then anyR = true break end end
 
 	local cl, md = nil, math.huge
 	for _, zone in ipairs(rocksFolder:GetChildren()) do
@@ -321,10 +382,7 @@ local function GetBestTargetPart()
 					local p = inst.PrimaryPart or inst:FindFirstChild("Hitbox") or inst:FindFirstChildWhichIsA("BasePart")
 					if p then
 						local d = (r.Position - p.Position).Magnitude
-						if d < md then
-							md = d
-							cl = p
-						end
+						if d < md then md = d; cl = p end
 					end
 				end
 			end
@@ -371,7 +429,9 @@ task.spawn(function()
 
 		if Settings.AutoFarm then
 			enableNoclip()
+
 			StartCameraStabilize()
+			StartCameraManager()
 
 			local _, r = GetCharAndRoot()
 			if r then
@@ -395,12 +455,14 @@ task.spawn(function()
 			end
 		else
 			StopLock()
+			StopCameraManager()
 			StopCameraStabilize()
 			disableNoclip()
 		end
 	end
 
 	StopLock()
+	StopCameraManager()
 	StopCameraStabilize()
 	disableNoclip()
 end)
