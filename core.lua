@@ -49,6 +49,7 @@ setDefault("TweenSpeed", 45)
 setDefault("YOffset", -4)
 setDefault("HitInterval", 0.15)
 setDefault("CameraStabilize", true)
+setDefault("AutoReequip", true)
 
 for _, n in ipairs(DATA.Zones) do if Settings.Zones[n] == nil then Settings.Zones[n] = false end end
 for _, n in ipairs(DATA.Rocks) do if Settings.Rocks[n] == nil then Settings.Rocks[n] = false end end
@@ -104,11 +105,16 @@ local function UpdateCameraState()
 	end
 end
 
--- ========= [6] TARGET LOGIC & FORCE HIT =========
-local CACHED_REMOTE = nil
+-- ========= [6] REMOTE CACHE (IMPROVED) =========
+local CACHED_REMOTES = {
+	ToolActivated = nil,
+	ToolHit = nil,
+}
+
 task.spawn(function()
 	pcall(function()
-		CACHED_REMOTE = game:GetService("ReplicatedStorage")
+		-- [UBAH] Path lengkap ke ToolActivated
+		CACHED_REMOTES.ToolActivated = ReplicatedStorage
 			:WaitForChild("Shared", 10)
 			:WaitForChild("Packages", 10)
 			:WaitForChild("Knit", 10)
@@ -116,30 +122,82 @@ task.spawn(function()
 			:WaitForChild("ToolService", 10)
 			:WaitForChild("RF", 10)
 			:WaitForChild("ToolActivated", 10)
+		print("[✓] ToolActivated Remote Found")
+	end)
+	
+	-- [TAMBAH] Cari path alternatif untuk Hit Remote
+	pcall(function()
+		CACHED_REMOTES.ToolHit = ReplicatedStorage
+			:WaitForChild("Shared", 10)
+			:WaitForChild("Packages", 10)
+			:WaitForChild("Knit", 10)
+			:WaitForChild("Services", 10)
+			:WaitForChild("ToolService", 10)
+			:WaitForChild("RF", 10)
+			:WaitForChild("ToolHit", 10)
+		print("[✓] ToolHit Remote Found")
 	end)
 end)
 
-local function HitPickaxe()
+-- ========= [7] PICKAXE MANAGEMENT (IMPROVED) =========
+local lastPickaxeEquipTime = 0
+local EQUIP_COOLDOWN = 0.3
+
+local function EnsurePickaxeEquipped()
 	local plr = Players.LocalPlayer
 	local char = plr.Character
-	if not char then return end
+	if not char then return false end
 
-	local pickaxe = char:FindFirstChild("Pickaxe")
-	if not pickaxe then
-		local backpackPickaxe = plr.Backpack:FindFirstChild("Pickaxe")
-		if backpackPickaxe then
-			backpackPickaxe.Parent = char
+	-- [CEK] Apakah pickaxe sudah di character
+	local pickaxeInChar = char:FindFirstChild("Pickaxe")
+	if pickaxeInChar then return true end
+	
+	-- [AMBIL] Dari backpack
+	local backpackPickaxe = plr.Backpack:FindFirstChild("Pickaxe")
+	if backpackPickaxe then
+		-- [COOLDOWN] Agar tidak spam equip
+		local now = tick()
+		if (now - lastPickaxeEquipTime) < EQUIP_COOLDOWN then
+			return false
 		end
+		lastPickaxeEquipTime = now
+		
+		backpackPickaxe.Parent = char
+		task.wait(0.1)
+		return true
 	end
 	
-	if CACHED_REMOTE then
+	return false
+end
+
+-- ========= [8] HIT SYSTEM (REDESIGNED) =========
+local function HitPickaxeOptimized()
+	local plr = Players.LocalPlayer
+	local char = plr.Character
+	if not (char and char:FindFirstChild("Humanoid")) then return end
+
+	-- [PASTIKAN] Pickaxe sudah equipped
+	if not EnsurePickaxeEquipped() then return end
+	
+	-- [INVOKE] ToolActivated untuk mulai mining
+	if CACHED_REMOTES.ToolActivated then
 		pcall(function()
-			CACHED_REMOTE:InvokeServer("Pickaxe")
+			CACHED_REMOTES.ToolActivated:InvokeServer("Pickaxe")
+		end)
+	end
+	
+	-- [INVOKE] ToolHit untuk hit damage (jika ada)
+	if CACHED_REMOTES.ToolHit then
+		pcall(function()
+			CACHED_REMOTES.ToolHit:InvokeServer()
 		end)
 	end
 end
 
+-- ========= [9] TARGET VALIDATION (IMPROVED) =========
 local function IsRockValid(rockModel)
+	if not rockModel or not rockModel.Parent then return false end
+	
 	local owner = rockModel:GetAttribute("LastHitPlayer")
 	if owner and owner ~= Players.LocalPlayer.Name then return false end
 
@@ -149,16 +207,17 @@ local function IsRockValid(rockModel)
 	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
 	local hpPercent = ((hp or maxHP)/maxHP)*100
 	
-	-- [FIX] Cek apakah ada rock/ore yang dipilih
+	-- [CEK] Rock selection
 	local anyRockSelected = false
 	for _, v in pairs(Settings.Rocks) do if v then anyRockSelected = true break end end
 	
+	-- [CEK] Ore selection
 	local anyOreSelected = false
 	for _, v in pairs(Settings.Ores) do if v then anyOreSelected = true break end end
-
+	
+	-- [LOGIC] Validasi berdasarkan HP
 	if hpPercent <= 45 then
 		if anyOreSelected then
-			local hasTargetOre = false
 			for _, child in ipairs(rockModel:GetChildren()) do
 				if child.Name == "Ore" and child:IsA("Model") then
 					if Settings.Ores[child:GetAttribute("Ore")] then return true end
@@ -174,6 +233,7 @@ local function IsRockValid(rockModel)
 	end
 end
 
+-- ========= [10] TARGET FINDER =========
 local function GetBestTargetPart()
 	local _, r = GetCharAndRoot()
 	if not r then return nil end
@@ -204,9 +264,10 @@ local function GetBestTargetPart()
 	return closest
 end
 
--- ========= [7] MAIN LOOP =========
+-- ========= [11] MAIN FARM LOOP (REFACTORED) =========
 task.spawn(function()
 	local currentTween = nil
+	local hitCounter = 0
 	
 	while _G.FarmLoop do
 		task.wait() 
@@ -228,13 +289,13 @@ task.spawn(function()
 					local dist = (root.Position - standPos).Magnitude
 
 					if dist > 3 then
-						-- FLY TO TARGET
+						-- ===== MOVEMENT PHASE =====
 						root.Anchored = false
 						hum.PlatformStand = false 
 						
 						local speed = Settings.TweenSpeed or 45
-						-- [FIX] Clamp duration agar tidak terlalu kecil (minimum 0.1)
-						local duration = math.max(0.1, dist / speed)
+						-- [FIX] Duration clamp untuk prevent NumberSequence error
+						local duration = math.max(0.15, dist / speed)
 						local info = TweenInfo.new(duration, Enum.EasingStyle.Linear)
 						
 						if not currentTween or currentTween.PlaybackState == Enum.PlaybackState.Completed then
@@ -243,37 +304,53 @@ task.spawn(function()
 								currentTween:Play()
 							end)
 						else
-							currentTween:Cancel()
 							pcall(function()
+								currentTween:Cancel()
 								currentTween = TweenService:Create(root, info, {CFrame = lookCF})
 								currentTween:Play()
 							end)
 						end
 						
-						HitPickaxe() 
+						hitCounter = 0 -- Reset hit counter saat bergerak
 						task.wait(0.05)
+						
 					else
-						-- ANCHOR & MINE
+						-- ===== MINING PHASE =====
 						if currentTween then 
-							currentTween:Cancel() 
+							pcall(function() currentTween:Cancel() end)
 							currentTween = nil 
 						end
 						
+						-- [ANCHOR] Character agar stabil
 						root.CFrame = lookCF
 						root.AssemblyLinearVelocity = Vector3.zero
 						root.AssemblyAngularVelocity = Vector3.zero
 						root.Anchored = true 
 						
-						HitPickaxe()
+						-- [HIT] Pickaxe berkali-kali untuk damage
+						HitPickaxeOptimized()
+						hitCounter = hitCounter + 1
+						
+						-- [LOG] Debug info
+						if hitCounter % 10 == 0 then
+							local targetHP = target.Parent:GetAttribute("Health") or 100
+							print(string.format("[MINING] Hit #%d | Target HP: %d", hitCounter, targetHP))
+						end
 						
 						task.wait(Settings.HitInterval)
 					end
 				else
-					if currentTween then currentTween:Cancel() end
+					-- [IDLE] Tidak ada target
+					if currentTween then 
+						pcall(function() currentTween:Cancel() end)
+					end
 					root.Anchored = false
+					hitCounter = 0
+					task.wait(0.5)
 				end
 			end
 		else
+			-- [DISABLE] AutoFarm mode
 			disableNoclip()
 			local _, r = GetCharAndRoot()
 			if r then r.Anchored = false end
@@ -281,4 +358,5 @@ task.spawn(function()
 	end
 end)
 
-print("[✓] FIX: SCRIPT FARM STABLE (UNDEFINED VARIABLES & TWEEN DURATION FIXED)")
+print("[✓] FARM SCRIPT V2 LOADED - DAMAGE SYSTEM FIXED")
+print("[✓] Features: Auto Equip | Dual Remote | Hit Optimization")
