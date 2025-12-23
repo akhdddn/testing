@@ -1,369 +1,674 @@
---[[
-    ===== THE FORGE GUI =====
-    GUI untuk Auto Mining System
-    Menggunakan Fluent UI Library
-    Compatible dengan Core v9.1
-]]
+--// THE FORGE - Manual Instance GUI (Template, safe callbacks)
+--// Theme: black + red, batik fire/iron vibe (image tinted)
+--// Controls: Tabs, drawers + checkboxes, sliders, drag, minimize (L), close
 
--- Load Fluent UI Library
-local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
-local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
-local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 
--- Validasi Core sudah dimuat
-if not _G.AutoMiner then
-    game:GetService("StarterGui"):SetCore("SendNotification", {
-        Title = "Error";
-        Text = "Core script belum dimuat! Reload script.";
-        Duration = 5;
-    })
-    return
-end
+local LP = Players.LocalPlayer
+local PG = LP:WaitForChild("PlayerGui")
 
-local AutoMiner = _G.AutoMiner
-
--- ===================== KONFIGURASI GUI =====================
-local Window = Fluent:CreateWindow({
-    Title = "🔨 The Forge - Auto Mining System",
-    SubTitle = "by akhdddn",
-    TabWidth = 160,
-    Size = UDim2.fromOffset(580, 460),
-    Acrylic = true,
-    Theme = "Darker",
-    MinimizeKey = Enum.KeyCode.LeftControl
-})
-
--- ===================== TABS =====================
-local Tabs = {
-    Main = Window:AddTab({ Title = "⚙️ Main", Icon = "settings" }),
-    Filters = Window:AddTab({ Title = "🔍 Filters", Icon = "filter" }),
-    Stats = Window:AddTab({ Title = "📊 Statistics", Icon = "bar-chart-2" }),
-    Settings = Window:AddTab({ Title = "⚡ Settings", Icon = "sliders" })
+-- =========================================================
+--  CONFIG / INTEGRATION POINTS (bind these from your own code)
+-- =========================================================
+local Callbacks = {
+	OnAutoMiningChanged = function(on) end,               -- (boolean)
+	OnFilterChanged = function(category, name, value) end, -- category: "Zones"/"Rocks"/"Ores"
+	OnTweenSpeedChanged = function(v) end,               -- number 20..80
+	OnYOffsetChanged = function(v) end,                  -- number -7..7
+	OnClose = function()
+		-- e.g. stop systems, restore character state, disconnect loops, etc.
+	end
 }
 
--- ===================== NOTIFIKASI HELPER =====================
-local function Notify(title, content, duration)
-    Fluent:Notify({
-        Title = title,
-        Content = content,
-        Duration = duration or 3
-    })
+-- Optional: if you are building this for your OWN experience/tool system, you can set these:
+-- Callbacks.OnAutoMiningChanged = function(on) YourSystem:SetEnabled(on) end
+
+-- =========================================================
+--  THEME
+-- =========================================================
+local C_BLACK = Color3.fromRGB(10, 10, 10)
+local C_BLACK2 = Color3.fromRGB(18, 18, 18)
+local C_RED = Color3.fromRGB(200, 0, 0)
+local C_RED2 = Color3.fromRGB(120, 0, 0)
+local C_TEXT = Color3.fromRGB(255, 235, 235)
+
+local BATIK_IMAGE_ID = "rbxassetid://0" -- TODO: replace with your batik image asset id
+
+-- =========================================================
+--  HELPERS
+-- =========================================================
+local function mk(className, props)
+	local inst = Instance.new(className)
+	for k, v in pairs(props or {}) do
+		inst[k] = v
+	end
+	return inst
 end
 
--- ===================== TAB: MAIN =====================
-local MainSection = Tabs.Main:AddSection("Mining Control")
+local function addCorner(parent, r)
+	mk("UICorner", {CornerRadius = UDim.new(0, r or 10), Parent = parent})
+end
 
--- Toggle Auto Mining
-local MiningToggle = Tabs.Main:AddToggle("AutoMining", {
-    Title = "🚀 Auto Mining",
-    Description = "Aktifkan/Nonaktifkan sistem mining otomatis",
-    Default = false
+local function addStroke(parent, thickness, color, transparency)
+	mk("UIStroke", {
+		Thickness = thickness or 1,
+		Color = color or C_RED,
+		Transparency = transparency or 0,
+		Parent = parent
+	})
+end
+
+local function addPadding(parent, p)
+	mk("UIPadding", {
+		PaddingTop = UDim.new(0, p),
+		PaddingBottom = UDim.new(0, p),
+		PaddingLeft = UDim.new(0, p),
+		PaddingRight = UDim.new(0, p),
+		Parent = parent
+	})
+end
+
+local function addList(parent, pad)
+	local layout = mk("UIListLayout", {
+		FillDirection = Enum.FillDirection.Vertical,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, pad or 8),
+		Parent = parent
+	})
+	return layout
+end
+
+local function setTextStyle(lbl)
+	lbl.Font = Enum.Font.Gotham
+	lbl.TextColor3 = C_TEXT
+	lbl.TextSize = 14
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.BackgroundTransparency = 1
+end
+
+local function clamp(n, a, b)
+	return math.max(a, math.min(b, n))
+end
+
+local function round(n)
+	if n >= 0 then return math.floor(n + 0.5) end
+	return math.ceil(n - 0.5)
+end
+
+-- =========================================================
+--  BUILD UI
+-- =========================================================
+-- Clean old
+local old = PG:FindFirstChild("TheForgeUI")
+if old then old:Destroy() end
+
+local ScreenGui = mk("ScreenGui", {
+	Name = "TheForgeUI",
+	ResetOnSpawn = false,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	Parent = PG
 })
 
-MiningToggle:OnChanged(function(value)
-    if value then
-        AutoMiner.start()
-        Notify("✅ Started", "Auto mining telah diaktifkan!", 3)
-    else
-        AutoMiner.stop()
-        Notify("🛑 Stopped", "Auto mining telah dihentikan.", 3)
-    end
+local Main = mk("Frame", {
+	Name = "Main",
+	Size = UDim2.fromOffset(640, 420),
+	Position = UDim2.new(0.5, -320, 0.5, -210),
+	BackgroundColor3 = C_BLACK,
+	BorderSizePixel = 0,
+	Parent = ScreenGui
+})
+addCorner(Main, 14)
+addStroke(Main, 2, C_RED, 0.15)
+
+-- Batik background layer (tinted red)
+local Batik = mk("ImageLabel", {
+	Name = "Batik",
+	BackgroundTransparency = 1,
+	Size = UDim2.fromScale(1, 1),
+	Image = BATIK_IMAGE_ID,
+	ImageColor3 = C_RED,
+	ImageTransparency = 0.75,
+	ScaleType = Enum.ScaleType.Tile,
+	TileSize = UDim2.fromOffset(180, 180),
+	Parent = Main
+})
+addCorner(Batik, 14)
+
+-- Dark overlay (iron feel)
+local Overlay = mk("Frame", {
+	Name = "Overlay",
+	BackgroundColor3 = C_BLACK,
+	BackgroundTransparency = 0.15,
+	Size = UDim2.fromScale(1, 1),
+	BorderSizePixel = 0,
+	Parent = Main
+})
+addCorner(Overlay, 14)
+
+-- TopBar (drag handle)
+local TopBar = mk("Frame", {
+	Name = "TopBar",
+	Size = UDim2.new(1, 0, 0, 44),
+	BackgroundColor3 = C_BLACK2,
+	BackgroundTransparency = 0.05,
+	BorderSizePixel = 0,
+	Parent = Main
+})
+addCorner(TopBar, 14)
+addStroke(TopBar, 1, C_RED2, 0.2)
+
+local Title = mk("TextLabel", {
+	Name = "Title",
+	Text = "THE FORGE  |  Api & Besi",
+	Size = UDim2.new(1, -160, 1, 0),
+	Position = UDim2.fromOffset(14, 0),
+	Parent = TopBar
+})
+setTextStyle(Title)
+Title.TextSize = 15
+
+local Hint = mk("TextLabel", {
+	Name = "Hint",
+	Text = "Minimize: [L]",
+	Size = UDim2.fromOffset(120, 44),
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -84, 0, 0),
+	Parent = TopBar
+})
+setTextStyle(Hint)
+Hint.TextXAlignment = Enum.TextXAlignment.Right
+Hint.TextTransparency = 0.15
+Hint.TextSize = 12
+
+local BtnMin = mk("TextButton", {
+	Name = "MinimizeBtn",
+	Text = "_",
+	Size = UDim2.fromOffset(36, 28),
+	Position = UDim2.new(1, -76, 0, 8),
+	BackgroundColor3 = C_BLACK,
+	BorderSizePixel = 0,
+	Parent = TopBar,
+	AutoButtonColor = false
+})
+addCorner(BtnMin, 8)
+addStroke(BtnMin, 1, C_RED2, 0.25)
+
+local BtnClose = mk("TextButton", {
+	Name = "CloseBtn",
+	Text = "X",
+	Size = UDim2.fromOffset(36, 28),
+	Position = UDim2.new(1, -36, 0, 8),
+	BackgroundColor3 = C_RED2,
+	BorderSizePixel = 0,
+	Parent = TopBar,
+	AutoButtonColor = false
+})
+addCorner(BtnClose, 8)
+addStroke(BtnClose, 1, C_RED, 0.2)
+
+local Body = mk("Frame", {
+	Name = "Body",
+	BackgroundTransparency = 1,
+	Size = UDim2.new(1, -16, 1, -60),
+	Position = UDim2.fromOffset(8, 52),
+	Parent = Main
+})
+
+-- Left tab bar
+local TabsBar = mk("Frame", {
+	Name = "TabsBar",
+	BackgroundColor3 = C_BLACK2,
+	BackgroundTransparency = 0.1,
+	BorderSizePixel = 0,
+	Size = UDim2.fromOffset(160, 1),
+	Parent = Body
+})
+TabsBar.Size = UDim2.new(0, 160, 1, 0)
+addCorner(TabsBar, 12)
+addStroke(TabsBar, 1, C_RED2, 0.25)
+addPadding(TabsBar, 10)
+addList(TabsBar, 10)
+
+local function makeTabButton(text)
+	local b = mk("TextButton", {
+		Text = text,
+		Size = UDim2.new(1, 0, 0, 40),
+		BackgroundColor3 = C_BLACK,
+		BorderSizePixel = 0,
+		AutoButtonColor = false,
+		Parent = TabsBar
+	})
+	addCorner(b, 10)
+	addStroke(b, 1, C_RED2, 0.35)
+	local t = mk("TextLabel", {Text = text, Size = UDim2.new(1, -16, 1, 0), Position = UDim2.fromOffset(12, 0), Parent = b})
+	setTextStyle(t)
+	t.TextSize = 14
+	return b
+end
+
+local TabBtnAuto = makeTabButton("Auto Mining")
+local TabBtnSettings = makeTabButton("Setting")
+
+-- Right content area
+local Content = mk("Frame", {
+	Name = "Content",
+	BackgroundColor3 = C_BLACK2,
+	BackgroundTransparency = 0.12,
+	BorderSizePixel = 0,
+	Size = UDim2.new(1, -170, 1, 0),
+	Position = UDim2.fromOffset(170, 0),
+	Parent = Body
+})
+addCorner(Content, 12)
+addStroke(Content, 1, C_RED2, 0.25)
+
+local AutoTab = mk("Frame", {Name="AutoTab", BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Parent=Content})
+local SetTab  = mk("Frame", {Name="SetTab",  BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Parent=Content})
+SetTab.Visible = false
+
+-- Tab button state
+local function setActiveTab(which)
+	AutoTab.Visible = (which == "auto")
+	SetTab.Visible = (which == "set")
+
+	TabBtnAuto.BackgroundColor3 = (which == "auto") and C_RED2 or C_BLACK
+	TabBtnSettings.BackgroundColor3 = (which == "set") and C_RED2 or C_BLACK
+end
+setActiveTab("auto")
+
+TabBtnAuto.MouseButton1Click:Connect(function() setActiveTab("auto") end)
+TabBtnSettings.MouseButton1Click:Connect(function() setActiveTab("set") end)
+
+-- =========================================================
+--  DRAGGING (TopBar only)
+-- =========================================================
+do
+	local dragging = false
+	local dragStart, startPos
+	local dragInput
+
+	local function update(input)
+		local delta = input.Position - dragStart
+		Main.Position = UDim2.new(
+			startPos.X.Scale, startPos.X.Offset + delta.X,
+			startPos.Y.Scale, startPos.Y.Offset + delta.Y
+		)
+	end
+
+	TopBar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = Main.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+				end
+			end)
+		end
+	end)
+
+	TopBar.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+			dragInput = input
+		end
+	end)
+
+	UIS.InputChanged:Connect(function(input)
+		if input == dragInput and dragging then
+			update(input)
+		end
+	end)
+end
+
+-- =========================================================
+--  MINIMIZE / CLOSE
+-- =========================================================
+local minimized = false
+local fullSize = Main.Size
+local function applyMinimize(state)
+	minimized = state
+	if minimized then
+		Body.Visible = false
+		Main.Size = UDim2.fromOffset(fullSize.X.Offset, 44)
+	else
+		Body.Visible = true
+		Main.Size = fullSize
+	end
+end
+
+BtnMin.MouseButton1Click:Connect(function()
+	applyMinimize(not minimized)
 end)
 
--- Button Rescan
-Tabs.Main:AddButton({
-    Title = "🔄 Rescan Workspace",
-    Description = "Pindai ulang semua rock yang tersedia",
-    Callback = function()
-        local success = AutoMiner.rescan()
-        if success then
-            local stats = AutoMiner.getStats()
-            Notify("✅ Rescan Selesai", 
-                string.format("Ditemukan %d zones, %d rocks", 
-                    stats.zones, stats.rocks), 5)
-        else
-            Notify("❌ Rescan Gagal", "Terjadi kesalahan saat scanning", 3)
-        end
-    end
-})
-
--- Quick Actions
-local QuickSection = Tabs.Main:AddSection("Quick Actions")
-
-Tabs.Main:AddButton({
-    Title = "🎯 Reset Prediction",
-    Description = "Reset data prediksi swing damage",
-    Callback = function()
-        AutoMiner.resetPrediction()
-        Notify("✅ Reset", "Data prediksi swing telah direset", 3)
-    end
-})
-
-Tabs.Main:AddButton({
-    Title = "📋 Print Status",
-    Description = "Cetak status mining ke console (F9)",
-    Callback = function()
-        AutoMiner.printStatus()
-        Notify("📋 Status", "Status dicetak ke console (tekan F9)", 3)
-    end
-})
-
--- ===================== TAB: FILTERS =====================
-local FilterInfo = Tabs.Filters:AddParagraph({
-    Title = "📌 Filter Information",
-    Content = "Aktifkan filter untuk menambang rock/ore tertentu saja. Jika tidak ada filter aktif, semua rock akan ditambang."
-})
-
--- Get data lists dari core
-local dataLists = AutoMiner.getDataLists()
-
--- ZONES FILTER
-local ZonesSection = Tabs.Filters:AddSection("🗺️ Zone Filters")
-
-Tabs.Filters:AddParagraph({
-    Title = "Zones",
-    Content = string.format("Total: %d zones tersedia", #dataLists.Zones)
-})
-
--- Buat toggle untuk setiap zone
-for _, zoneName in ipairs(dataLists.Zones) do
-    local toggle = Tabs.Filters:AddToggle("Zone_" .. zoneName, {
-        Title = zoneName,
-        Description = "Filter zone: " .. zoneName,
-        Default = false
-    })
-    
-    toggle:OnChanged(function(value)
-        AutoMiner.setFilter("Zones", zoneName, value)
-        local status = AutoMiner.getFilterStatus()
-        if value then
-            Notify("🗺️ Zone Aktif", zoneName, 2)
-        end
-    end)
-end
-
--- ROCKS FILTER
-local RocksSection = Tabs.Filters:AddSection("🪨 Rock Filters")
-
-Tabs.Filters:AddParagraph({
-    Title = "Rocks",
-    Content = string.format("Total: %d jenis rock tersedia", #dataLists.Rocks)
-})
-
-for _, rockName in ipairs(dataLists.Rocks) do
-    local toggle = Tabs.Filters:AddToggle("Rock_" .. rockName, {
-        Title = rockName,
-        Description = "Filter rock: " .. rockName,
-        Default = false
-    })
-    
-    toggle:OnChanged(function(value)
-        AutoMiner.setFilter("Rocks", rockName, value)
-        if value then
-            Notify("🪨 Rock Aktif", rockName, 2)
-        end
-    end)
-end
-
--- ORES FILTER
-local OresSection = Tabs.Filters:AddSection("💎 Ore Filters")
-
-Tabs.Filters:AddParagraph({
-    Title = "Ores",
-    Content = string.format("Total: %d jenis ore tersedia", #dataLists.Ores)
-})
-
-for _, oreName in ipairs(dataLists.Ores) do
-    local toggle = Tabs.Filters:AddToggle("Ore_" .. oreName, {
-        Title = oreName,
-        Description = "Filter ore: " .. oreName,
-        Default = false
-    })
-    
-    toggle:OnChanged(function(value)
-        AutoMiner.setFilter("Ores", oreName, value)
-        if value then
-            Notify("💎 Ore Aktif", oreName, 2)
-        end
-    end)
-end
-
--- ===================== TAB: STATISTICS =====================
-local StatsSection = Tabs.Stats:AddSection("📊 Real-Time Statistics")
-
--- Buat paragraf untuk statistik yang akan di-update
-local MiningStatusPara = Tabs.Stats:AddParagraph({
-    Title = "🔨 Mining Status",
-    Content = "Menunggu data..."
-})
-
-local PerformancePara = Tabs.Stats:AddParagraph({
-    Title = "⚡ Performance",
-    Content = "Menunggu data..."
-})
-
-local FilterStatusPara = Tabs.Stats:AddParagraph({
-    Title = "🔍 Filter Status",
-    Content = "Menunggu data..."
-})
-
-local PredictionPara = Tabs.Stats:AddParagraph({
-    Title = "🎯 Swing Prediction",
-    Content = "Menunggu data..."
-})
-
--- Update statistik setiap 2 detik
-task.spawn(function()
-    while true do
-        task.wait(2)
-        
-        local stats = AutoMiner.getStats()
-        local filterStatus = AutoMiner.getFilterStatus()
-        local swingStats = AutoMiner.getSwingStats()
-        
-        -- Update Mining Status
-        MiningStatusPara:SetDesc(string.format(
-            "Status: %s\n" ..
-            "Current Rock: %s\n" ..
-            "Next Rock: %s\n" ..
-            "Zones Found: %d\n" ..
-            "Rocks Found: %d",
-            stats.miningActive and "🟢 ACTIVE" or "🔴 INACTIVE",
-            stats.currentRock,
-            stats.nextRock,
-            stats.zones,
-            stats.rocks
-        ))
-        
-        -- Update Performance
-        PerformancePara:SetDesc(string.format(
-            "Tween Speed: %d (Actual: %d studs/sec)\n" ..
-            "Y Offset: %d studs\n" ..
-            "Mining Interval: %.2f seconds",
-            stats.tweenSpeed,
-            stats.tweenSpeed * 2,
-            stats.yOffset,
-            stats.miningInterval
-        ))
-        
-        -- Update Filter Status
-        FilterStatusPara:SetDesc(string.format(
-            "Filter Active: %s\n" ..
-            "Active Zones: %d\n" ..
-            "Active Rocks: %d\n" ..
-            "Active Ores: %d",
-            filterStatus.isActive and "🟢 YES" or "🔴 NO",
-            filterStatus.zones,
-            filterStatus.rocks,
-            filterStatus.ores
-        ))
-        
-        -- Update Prediction
-        PredictionPara:SetDesc(string.format(
-            "Average Damage: %d HP/swing\n" ..
-            "Samples Collected: %d\n" ..
-            "Rocks Tracked: %d",
-            swingStats.averageDamage,
-            swingStats.sampleCount,
-            swingStats.rockDataCount
-        ))
-    end
+UIS.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.L then
+		applyMinimize(not minimized)
+	end
 end)
 
--- ===================== TAB: SETTINGS =====================
-local MovementSection = Tabs.Settings:AddSection("🏃 Movement Settings")
+local function doClose()
+	pcall(function() Callbacks.OnClose() end)
+	ScreenGui:Destroy()
+end
 
--- Slider Tween Speed
-local TweenSpeedSlider = Tabs.Settings:AddSlider("TweenSpeed", {
-    Title = "⚡ Tween Speed",
-    Description = "Kecepatan pergerakan karakter (20-80)",
-    Default = AutoMiner.getTweenSpeed(),
-    Min = 20,
-    Max = 80,
-    Rounding = 0,
-    Callback = function(value)
-        AutoMiner.setTweenSpeed(value)
-    end
+BtnClose.MouseButton1Click:Connect(doClose)
+
+-- =========================================================
+--  AUTO MINING TAB CONTENT
+-- =========================================================
+addPadding(AutoTab, 12)
+addList(AutoTab, 10)
+
+local function headerLabel(parent, text)
+	local lbl = mk("TextLabel", {Text = text, Size = UDim2.new(1, 0, 0, 22), Parent = parent})
+	setTextStyle(lbl)
+	lbl.TextSize = 15
+	return lbl
+end
+
+headerLabel(AutoTab, "Control")
+
+local ToggleRow = mk("Frame", {BackgroundTransparency=1, Size=UDim2.new(1,0,0,44), Parent=AutoTab})
+local ToggleBtn = mk("TextButton", {
+	Text = "",
+	Size = UDim2.fromOffset(64, 28),
+	Position = UDim2.fromOffset(0, 8),
+	BackgroundColor3 = C_BLACK,
+	BorderSizePixel = 0,
+	AutoButtonColor = false,
+	Parent = ToggleRow
 })
+addCorner(ToggleBtn, 14)
+addStroke(ToggleBtn, 1, C_RED2, 0.15)
 
--- Display real speed
-Tabs.Settings:AddParagraph({
-    Title = "Speed Info",
-    Content = "20 = 40 studs/sec\n50 = 100 studs/sec\n80 = 160 studs/sec"
+local ToggleKnob = mk("Frame", {
+	Size = UDim2.fromOffset(24, 24),
+	Position = UDim2.fromOffset(2, 2),
+	BackgroundColor3 = C_RED2,
+	BorderSizePixel = 0,
+	Parent = ToggleBtn
 })
+addCorner(ToggleKnob, 12)
 
--- Slider Y Offset
-local YOffsetSlider = Tabs.Settings:AddSlider("YOffset", {
-    Title = "📏 Y Offset",
-    Description = "Tinggi posisi karakter saat mining (-7 hingga 7)",
-    Default = AutoMiner.getYOffset(),
-    Min = -7,
-    Max = 7,
-    Rounding = 0,
-    Callback = function(value)
-        AutoMiner.setYOffset(value)
-    end
+local ToggleText = mk("TextLabel", {
+	Text = "Auto Mining: OFF",
+	Size = UDim2.new(1, -80, 1, 0),
+	Position = UDim2.fromOffset(80, 0),
+	Parent = ToggleRow
 })
+setTextStyle(ToggleText)
+ToggleText.TextSize = 14
 
-Tabs.Settings:AddParagraph({
-    Title = "Y Offset Info",
-    Content = "Negatif = Di bawah rock\n0 = Sejajar dengan rock\nPositif = Di atas rock"
-})
+local autoOn = false
+local function setToggle(v)
+	autoOn = v and true or false
+	ToggleText.Text = autoOn and "Auto Mining: ON" or "Auto Mining: OFF"
 
--- Performance Section
-local PerformanceSection = Tabs.Settings:AddSection("⚙️ Performance Info")
+	local goal = autoOn and UDim2.fromOffset(38, 2) or UDim2.fromOffset(2, 2)
+	local color = autoOn and C_RED or C_RED2
 
-Tabs.Settings:AddParagraph({
-    Title = "ℹ️ System Information",
-    Content = 
-        "• Mining Interval: 0.5 detik (fixed)\n" ..
-        "• Scan Interval: 20 detik\n" ..
-        "• Max Swings: 100 per rock\n" ..
-        "• Ore Threshold: <45% HP\n" ..
-        "• NoClip: Enabled saat mining\n" ..
-        "• Anti-Gravity: Enabled saat mining"
-})
+	TweenService:Create(ToggleKnob, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = goal, BackgroundColor3 = color}):Play()
+	TweenService:Create(ToggleBtn, TweenInfo.new(0.15), {BackgroundColor3 = autoOn and C_RED2 or C_BLACK}):Play()
 
--- Credits Section
-local CreditsSection = Tabs.Settings:AddSection("👨‍💻 Credits")
+	pcall(function() Callbacks.OnAutoMiningChanged(autoOn) end)
+end
 
-Tabs.Settings:AddParagraph({
-    Title = "Made by akhdddn",
-    Content = 
-        "🔨 The Forge Auto Mining System v9.1\n" ..
-        "📚 Core: Optimized mining engine\n" ..
-        "🎨 GUI: Fluent UI Library\n" ..
-        "⚡ Features: Smart targeting, swing prediction, filters"
-})
+ToggleBtn.MouseButton1Click:Connect(function()
+	setToggle(not autoOn)
+end)
 
--- ===================== SAVE MANAGER & INTERFACE =====================
-SaveManager:SetLibrary(Fluent)
-InterfaceManager:SetLibrary(Fluent)
+-- Drawer builder
+local function createDrawer(parent, title, items, category)
+	local wrap = mk("Frame", {BackgroundColor3=C_BLACK2, BackgroundTransparency=0.18, BorderSizePixel=0, Size=UDim2.new(1,0,0,48), Parent=parent})
+	addCorner(wrap, 12)
+	addStroke(wrap, 1, C_RED2, 0.25)
 
--- Set folder untuk menyimpan konfigurasi
-SaveManager:SetFolder("TheForge/AutoMining")
+	local head = mk("TextButton", {Text="", BackgroundTransparency=1, Size=UDim2.new(1,0,0,42), Parent=wrap, AutoButtonColor=false})
+	local ttl = mk("TextLabel", {Text=title, Size=UDim2.new(1,-60,1,0), Position=UDim2.fromOffset(12,0), Parent=head})
+	setTextStyle(ttl)
+	ttl.TextSize = 14
 
--- Build config section di settings tab
-InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+	local arrow = mk("TextLabel", {Text="v", Size=UDim2.fromOffset(24,24), AnchorPoint=Vector2.new(1,0.5), Position=UDim2.new(1,-12,0.5,0), Parent=head})
+	setTextStyle(arrow)
+	arrow.TextXAlignment = Enum.TextXAlignment.Center
+	arrow.TextSize = 16
 
--- Load auto-load config jika ada
-SaveManager:LoadAutoloadConfig()
+	local listFrame = mk("ScrollingFrame", {
+		Visible = false,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, -16, 0, 160),
+		Position = UDim2.fromOffset(8, 44),
+		CanvasSize = UDim2.new(0,0,0,0),
+		ScrollBarThickness = 6,
+		ScrollBarImageColor3 = C_RED2,
+		Parent = wrap
+	})
+	addList(listFrame, 6)
+	addPadding(listFrame, 2)
 
--- ===================== WINDOW SETUP =====================
-Fluent:Notify({
-    Title = "🔨 The Forge",
-    Content = "GUI berhasil dimuat! Selamat mining!",
-    Duration = 5
-})
+	local opened = false
+	local function recalcCanvas()
+		task.defer(function()
+			local ui = listFrame:FindFirstChildOfClass("UIListLayout")
+			if ui then
+				listFrame.CanvasSize = UDim2.new(0,0,0, ui.AbsoluteContentSize.Y + 6)
+			end
+		end)
+	end
 
--- Log success
-print("✅ [GUI] The Forge GUI berhasil dimuat")
-print("✅ [GUI] Tekan LeftControl untuk minimize/maximize")
+	local state = {} -- name -> bool
 
--- Set window
-Window:SelectTab(1)
+	for _, name in ipairs(items) do
+		state[name] = false
 
--- Export AutoMiner ke global (sudah ada dari core, tapi untuk memastikan)
-_G.AutoMiner = AutoMiner
+		local item = mk("TextButton", {
+			Text = "",
+			BackgroundColor3 = C_BLACK,
+			BorderSizePixel = 0,
+			AutoButtonColor = false,
+			Size = UDim2.new(1, 0, 0, 32),
+			Parent = listFrame
+		})
+		addCorner(item, 10)
+		addStroke(item, 1, C_RED2, 0.35)
 
-return Window
+		local box = mk("Frame", {Size=UDim2.fromOffset(18,18), Position=UDim2.fromOffset(10,7), BackgroundColor3=C_BLACK2, BorderSizePixel=0, Parent=item})
+		addCorner(box, 5)
+		addStroke(box, 1, C_RED2, 0.2)
+
+		local tick = mk("Frame", {Size=UDim2.fromOffset(10,10), Position=UDim2.fromOffset(4,4), BackgroundColor3=C_RED, BorderSizePixel=0, Visible=false, Parent=box})
+		addCorner(tick, 3)
+
+		local txt = mk("TextLabel", {Text=name, Size=UDim2.new(1, -40, 1, 0), Position=UDim2.fromOffset(36,0), Parent=item})
+		setTextStyle(txt)
+		txt.TextSize = 13
+
+		item.MouseButton1Click:Connect(function()
+			state[name] = not state[name]
+			tick.Visible = state[name]
+			pcall(function() Callbacks.OnFilterChanged(category, name, state[name]) end)
+		end)
+	end
+
+	recalcCanvas()
+
+	local function setOpen(v)
+		opened = v and true or false
+		listFrame.Visible = opened
+		arrow.Text = opened and "^" or "v"
+		wrap.Size = opened and UDim2.new(1,0,0, 44 + 160 + 6) or UDim2.new(1,0,0,48)
+	end
+
+	head.MouseButton1Click:Connect(function()
+		setOpen(not opened)
+	end)
+
+	return {
+		SetOpen = setOpen,
+		State = state,
+		ClearAll = function()
+			for k in pairs(state) do state[k] = false end
+			for _, child in ipairs(listFrame:GetChildren()) do
+				if child:IsA("TextButton") then
+					local box = child:FindFirstChildWhichIsA("Frame")
+					if box then
+						local tick = box:FindFirstChildWhichIsA("Frame")
+						if tick then tick.Visible = false end
+					end
+				end
+			end
+		end
+	}
+end
+
+-- Items placeholder (provide your own lists from server/game config)
+-- For legal use in your own experience, populate these arrays with your actual zones/rocks/ores.
+local Zones = { "ZoneA", "ZoneB", "ZoneC" }
+local Rocks = { "RockA", "RockB", "RockC" }
+local Ores  = { "OreA", "OreB", "OreC" }
+
+headerLabel(AutoTab, "Filters (Laci)")
+local DrawerZones = createDrawer(AutoTab, "Laci Zone", Zones, "Zones")
+local DrawerRocks = createDrawer(AutoTab, "Laci Rock", Rocks, "Rocks")
+local DrawerOres  = createDrawer(AutoTab, "Laci Ore",  Ores,  "Ores")
+
+-- =========================================================
+--  SETTINGS TAB CONTENT (Sliders)
+-- =========================================================
+addPadding(SetTab, 12)
+addList(SetTab, 12)
+
+headerLabel(SetTab, "Movement Settings")
+
+local function createSlider(parent, title, minV, maxV, defaultV, onChanged)
+	local wrap = mk("Frame", {BackgroundColor3=C_BLACK2, BackgroundTransparency=0.18, BorderSizePixel=0, Size=UDim2.new(1,0,0,70), Parent=parent})
+	addCorner(wrap, 12)
+	addStroke(wrap, 1, C_RED2, 0.25)
+	addPadding(wrap, 12)
+
+	local lbl = mk("TextLabel", {Text=title, Size=UDim2.new(1,0,0,18), Parent=wrap})
+	setTextStyle(lbl)
+	lbl.TextSize = 14
+
+	local valLbl = mk("TextLabel", {Text=tostring(defaultV), Size=UDim2.fromOffset(80,18), AnchorPoint=Vector2.new(1,0), Position=UDim2.new(1,0,0,0), Parent=wrap})
+	setTextStyle(valLbl)
+	valLbl.TextXAlignment = Enum.TextXAlignment.Right
+	valLbl.TextTransparency = 0.1
+
+	local bar = mk("Frame", {BackgroundColor3=C_BLACK, BorderSizePixel=0, Size=UDim2.new(1,0,0,10), Position=UDim2.fromOffset(0, 34), Parent=wrap})
+	addCorner(bar, 8)
+	addStroke(bar, 1, C_RED2, 0.35)
+
+	local fill = mk("Frame", {BackgroundColor3=C_RED2, BorderSizePixel=0, Size=UDim2.new(0,0,1,0), Parent=bar})
+	addCorner(fill, 8)
+
+	local knob = mk("Frame", {BackgroundColor3=C_RED, BorderSizePixel=0, Size=UDim2.fromOffset(18,18), Parent=bar})
+	addCorner(knob, 9)
+	knob.Position = UDim2.new(0, -9, 0.5, -9)
+
+	local dragging = false
+	local current = defaultV
+
+	local function setValue(v)
+		current = clamp(v, minV, maxV)
+		valLbl.Text = tostring(current)
+
+		local alpha = (current - minV) / (maxV - minV)
+		local px = math.floor(alpha * bar.AbsoluteSize.X)
+		fill.Size = UDim2.new(0, px, 1, 0)
+		knob.Position = UDim2.new(0, px - 9, 0.5, -9)
+
+		if onChanged then pcall(onChanged, current) end
+	end
+
+	local function valueFromX(x)
+		local rel = clamp(x - bar.AbsolutePosition.X, 0, bar.AbsoluteSize.X)
+		local alpha = rel / bar.AbsoluteSize.X
+		local v = minV + alpha * (maxV - minV)
+		return round(v)
+	end
+
+	local function beginDrag(input)
+		dragging = true
+		setValue(valueFromX(input.Position.X))
+	end
+
+	bar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			beginDrag(input)
+		end
+	end)
+
+	knob.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			beginDrag(input)
+		end
+	end)
+
+	UIS.InputChanged:Connect(function(input)
+		if not dragging then return end
+		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+			setValue(valueFromX(input.Position.X))
+		end
+	end)
+
+	UIS.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	-- init after render
+	task.defer(function() setValue(defaultV) end)
+
+	return { SetValue = setValue, GetValue = function() return current end }
+end
+
+local TweenSpeedSlider = createSlider(SetTab, "Tween Speed (20 - 80)", 20, 80, 50, function(v)
+	Callbacks.OnTweenSpeedChanged(v)
+end)
+
+local YOffsetSlider = createSlider(SetTab, "Y Offset (-7 - 7)", -7, 7, -6, function(v)
+	Callbacks.OnYOffsetChanged(v)
+end)
+
+-- =========================================================
+--  CLOSE SHOULD STOP & CLEAR (template behavior)
+-- =========================================================
+local function stopAndClear()
+	pcall(function() Callbacks.OnAutoMiningChanged(false) end)
+	pcall(function()
+		-- Clear UI checks (and call filter false if desired)
+		DrawerZones.ClearAll()
+		DrawerRocks.ClearAll()
+		DrawerOres.ClearAll()
+	end)
+	pcall(function() Callbacks.OnClose() end)
+end
+
+BtnClose.MouseButton1Click:Connect(function()
+	stopAndClear()
+	ScreenGui:Destroy()
+end)
+
+-- =========================================================
+--  EXPORT (optional)
+-- =========================================================
+return {
+	Gui = ScreenGui,
+	SetCallbacks = function(newCbs)
+		for k,v in pairs(newCbs) do
+			if Callbacks[k] ~= nil and type(v) == "function" then
+				Callbacks[k] = v
+			end
+		end
+	end,
+	SetAutoMining = function(on) setToggle(on) end,
+	SetTweenSpeed = function(v) TweenSpeedSlider.SetValue(v) end,
+	SetYOffset = function(v) YOffsetSlider.SetValue(v) end
+}
