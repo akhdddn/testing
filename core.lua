@@ -1,12 +1,9 @@
 --// ==========================================================
---// THE FORGE CORE: SMART MINER (REVEAL & FILTER)
+--// THE FORGE CORE: FINAL FIX (REMOTE CACHING)
 --// ==========================================================
 --// Status: FINAL
---// Logic Update:
---// 1. Fresh Rock (>45%): MINE IT (To reveal the ore).
---// 2. Opened Rock (<45%): CHECK IT. 
---//    - If Ore matches filter -> Finish it.
---//    - If Ore wrong -> Leave it immediately.
+--// Fix: "Not Mining" caused by WaitForChild loop spam.
+--// Solution: Remote path is cached ONCE, then Invoked continuously.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -332,31 +329,38 @@ local function StopCameraStateManager()
 	lastMining = nil
 end
 
--- ========= [7] TARGET LOGIC (REVEAL + FILTER) =========
-local lastHit = 0
+-- ========= [7] TARGET LOGIC (OPTIMIZED REMOTE) =========
+local CACHED_REMOTE = nil
 
+-- Cache Remote Once to prevent WaitForChild Loop Spam
+task.spawn(function()
+	pcall(function()
+		CACHED_REMOTE = game:GetService("ReplicatedStorage")
+			:WaitForChild("Shared", 10)
+			:WaitForChild("Packages", 10)
+			:WaitForChild("Knit", 10)
+			:WaitForChild("Services", 10)
+			:WaitForChild("ToolService", 10)
+			:WaitForChild("RF", 10)
+			:WaitForChild("ToolActivated", 10)
+	end)
+end)
+
+local lastHit = 0
 local function HitPickaxe()
 	local now = os.clock()
 	if (now - lastHit) < (Settings.HitInterval or 0.15) then return end
 	lastHit = now
 	
-	local args = {
-		"Pickaxe"
-	}
+	local args = { "Pickaxe" }
 
-	task.spawn(function()
-		pcall(function() 
-			game:GetService("ReplicatedStorage")
-				:WaitForChild("Shared")
-				:WaitForChild("Packages")
-				:WaitForChild("Knit")
-				:WaitForChild("Services")
-				:WaitForChild("ToolService")
-				:WaitForChild("RF")
-				:WaitForChild("ToolActivated")
-				:InvokeServer(unpack(args))
+	if CACHED_REMOTE then
+		task.spawn(function()
+			pcall(function()
+				CACHED_REMOTE:InvokeServer(unpack(args))
+			end)
 		end)
-	end)
+	end
 end
 
 local function IsRockValid(rockModel, anyOreSelected, anyRockSelected)
@@ -374,12 +378,9 @@ local function IsRockValid(rockModel, anyOreSelected, anyRockSelected)
 	local hpPercent = ((hp or maxHP)/maxHP)*100
 	local isRevealed = hpPercent <= 45
 
-	-- [LOGIKA PINTAR: REVEAL & FILTER]
-	
 	if isRevealed then
-		-- A. JIKA BATU SUDAH TERBUKA (Isi Kelihatan)
+		-- A. JIKA BATU SUDAH TERBUKA
 		if anyOreSelected then
-			-- Cek apakah isinya sesuai filter Ore?
 			local hasTargetOre = false
 			for _, child in ipairs(rockModel:GetChildren()) do
 				if child.Name == "Ore" and child:IsA("Model") then
@@ -390,27 +391,19 @@ local function IsRockValid(rockModel, anyOreSelected, anyRockSelected)
 					end
 				end
 			end
-			-- Kalau isinya BUKAN target kita, TINGGALKAN.
 			if not hasTargetOre then return false end
 		end
-		
-		-- Filter Rock Name (Secondary Check)
 		if anyRockSelected then
 			if not Settings.Rocks[rockModel.Name] then return false end
 		end
-
-		return true -- Valid (Sesuai Ore atau Sesuai Rock)
+		return true 
 
 	else
-		-- B. JIKA BATU MASIH TERTUTUP (HP > 45%)
-		-- Pukul saja untuk melihat isinya (Gacha), KECUALI user memfilter Nama Batu.
-		
+		-- B. JIKA BATU MASIH TERTUTUP (FRESH)
 		if anyRockSelected then
-			-- User spesifik hanya mau pukul 'Basalt'? Cek nama.
 			return Settings.Rocks[rockModel.Name] == true
 		end
-		
-		-- Jika tidak ada filter nama batu, pukul batu apa saja yg fresh.
+		-- Gacha / Reveal Mode
 		return true 
 	end
 end
@@ -519,34 +512,17 @@ task.spawn(function()
 						
 						local m = lockedTarget:FindFirstAncestorOfClass("Model")
 						if m then
-							-- Live Check saat sedang memukul
 							local hp = m:GetAttribute("Health") or 0
 							local owner = m:GetAttribute("LastHitPlayer")
 							
-							-- Cek jika sudah mati
 							if hp <= 0 then
 								lockedTarget = nil
 								lockedUntil = 0 
-							-- Cek jika direbut orang
 							elseif owner and owner ~= Players.LocalPlayer.Name then
 								lockedTarget = nil
 								lockedUntil = 0
-							-- [SMART CHECK]: Cek jika Ore sudah keluar TAPI salah jenis
-							elseif anyO then
-								local maxHP = m:GetAttribute("MaxHealth") or 100
-								if ((hp/maxHP)*100 <= 45) then
-									-- Batu sudah kebuka, cek isinya valid gak?
-									if not IsRockValid(m, anyO, anyR) then
-										-- Isi SALAH -> Tinggalkan instan
-										lockedTarget = nil
-										lockedUntil = 0
-									else
-										HitPickaxe()
-									end
-								else
-									HitPickaxe() -- Masih tertutup, lanjut pukul
-								end
 							else
+								-- PUKUL LANGSUNG tanpa Logic ganda
 								HitPickaxe()
 							end
 						end
@@ -567,4 +543,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: SMART MINER (REVEAL -> CHECK -> FILTER/LEAVE)")
+print("[✓] FORGE CORE: CACHED REMOTE + SMART REVEAL")
