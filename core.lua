@@ -1,4 +1,4 @@
--- ============================================
+buat gui secara manual menggunakan instance, dengan latar batik yang bertemakan api dan besi, warna paduan adalah hitam dan merah saja. gui memiliki 2 tab: 1. Auto Mining (a. Saklar On/Off Auto Mining, b. Laci Zone dengan isi yang bisa dicentang, c. Laci Rock dengan isi yang bisa dicentang, d. Laci Ore dengan isi yang bisa dicentang) 2. Setting (a. Tween Speed Slider  dari 20 sampai 80, b. Y Offset Slider dari -7 studs sampai dengan 7 studs). gui yang ada punya minimize (keybind L), dan close (menghentikan dan menghapus efek dari script jika diclose). gui harus bisa diseret, dan buat slider tidak menyeret guinya. sesuaikan dengan core : -- ============================================
 -- AUTO MINING SCRIPT - OPTIMIZED VERSION 9.1
 -- Struktur yang benar berdasarkan informasi:
 -- Workspace.Rocks.Zone (Folder).SpawnLocation (Part).Rock (Model)
