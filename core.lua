@@ -356,6 +356,13 @@ task.spawn(function()
 			task.wait(1)
 		end
 	end
+	
+	-- Cleanup setelah loop berhenti
+	disableNoclip()
+	if currentTween then
+		pcall(function() currentTween:Cancel() end)
+	end
+	DebugLog("CORE", "Logic loop stopped", "SUCCESS")
 end)
 
 -- ========= [13] READY SIGNAL =========
