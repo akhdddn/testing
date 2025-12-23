@@ -1,664 +1,869 @@
--- ===== lprxsw - The Forge GUI (MAXIMIZED V5 - FIXED) =====
---// Features:
---// - Auto-Scale Layout (Fits any Mobile/PC screen)
---// - Search Filter for Zones/Rocks/Ores
---// - High Z-Index (Above Roblox Controls)
---// - Drag Fix + Mobile Friendly Scroll
---// - Real-time Debug Panel (FIXED & OPTIMIZED)
+-- ============================================
+-- AUTO MINING SCRIPT - OPTIMIZED VERSION 9.1
+-- Struktur yang benar berdasarkan informasi:
+-- Workspace.Rocks.Zone (Folder).SpawnLocation (Part).Rock (Model)
+-- ============================================
 
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
+local Players, Workspace, RunService, TweenService, ReplicatedStorage = 
+      game:GetService("Players"), game:GetService("Workspace"), 
+      game:GetService("RunService"), game:GetService("TweenService"),
+      game:GetService("ReplicatedStorage")
 
---// --- [ DYNAMIC SCALING CONFIG ] ---
-local cam = Workspace.CurrentCamera
-local vp = cam.ViewportSize
+local localPlayer = Players.LocalPlayer
+local USER_ID = localPlayer.UserId
 
-local IS_MOBILE = (vp.Y < 600) or (UserInputService.TouchEnabled and not UserInputService.MouseEnabled)
-local TARGET_W = math.floor(vp.X * (IS_MOBILE and 0.9 or 0.6))
-local TARGET_H = math.floor(vp.Y * (IS_MOBILE and 0.85 or 0.6))
-local TITLE_H = IS_MOBILE and 60 or 50
-local TAB_W = IS_MOBILE and math.floor(TARGET_W * 0.28) or 180
-local FONT_MULT = IS_MOBILE and 1.8 or 1.5 
-local function FS(n) return math.floor(n * FONT_MULT + 0.5) end
-
---// Services & Wait
-local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
-
-local function waitForGlobals(timeoutSec)
-	local t0 = os.clock()
-	while os.clock() - t0 < timeoutSec do
-		if _G.DATA and _G.Settings then return _G.DATA, _G.Settings end
-		task.wait(0.1)
-	end
-	return nil, nil
-end
-
-local DATA, Settings = waitForGlobals(10)
-if not DATA or not Settings then
-	warn("[x] Timeout: _G.DATA/_G.Settings not found.")
-	return
-end
-
---// Config Ensure
-local function ensureBranch(root, key) root[key] = root[key] or {}; return root[key] end
-ensureBranch(Settings, "Zones")
-ensureBranch(Settings, "Rocks")
-ensureBranch(Settings, "Ores")
-
-Settings.TweenSpeed = Settings.TweenSpeed or 40
-Settings.YOffset = Settings.YOffset or 2
-Settings.AutoFarm = Settings.AutoFarm or false
-
-ensureBranch(_G.Settings, "Zones")
-ensureBranch(_G.Settings, "Rocks")
-ensureBranch(_G.Settings, "Ores")
-
-_G.Settings.TweenSpeed = _G.Settings.TweenSpeed or Settings.TweenSpeed
-_G.Settings.YOffset = _G.Settings.YOffset or Settings.YOffset
-_G.Settings.AutoFarm = _G.Settings.AutoFarm or Settings.AutoFarm
-
---// [TAMBAH] DEBUG SYSTEM (SIMPLIFIED)
-local DEBUG = {
-	Enabled = true,
-	Logs = {},
-	MaxLogs = 50,
+-- ===================== KONSTANTA & DATA =====================
+local DATA = {
+    Zones = {
+        "Island2CaveDanger1", "Island2CaveDanger2", "Island2CaveDanger3",
+        "Island2CaveDanger4", "Island2CaveDangerClosed", "Island2CaveDeep",
+        "Island2CaveLavaClosed", "Island2CaveMid", "Island2CaveStart",
+        "Island2GoblinCave", "Island2VolcanicDepths"
+    },
+    Rocks = {
+        "Basalt", "Basalt Core", "Basalt Rock", "Basalt Vein", "Boulder",
+        "Crimson Crystal", "Cyan Crystal", "Earth Crystal", "Lava Rock",
+        "Light Crystal", "Lucky Block", "Pebble", "Rock", "Violet Crystal",
+        "Volcanic Rock"
+    },
+    Ores = {
+        "Aite", "Amethyst", "Arcane Crystal", "Bananite", "Blue Crystal",
+        "Boneite", "Cardboardite", "Cobalt", "Copper", "Crimson Crystal",
+        "Cuprite", "Dark Boneite", "Darkryte", "Demonite", "Diamond",
+        "Emerald", "Eye Ore", "Fichillium", "Fichilliumorite", "Fireite",
+        "Galaxite", "Gold", "Grass", "Green Crystal", "Iceite", "Iron",
+        "Jade", "Lapis Lazuli", "Lightite", "Magenta Crystal", "Magmaite",
+        "Meteorite", "Mushroomite", "Mythril", "Obsidian", "Orange Crystal",
+        "Platinum", "Poopite", "Quartz", "Rainbow Crystal", "Rivalite",
+        "Ruby", "Sand Stone", "Sapphire", "Silver", "Slimite", "Starite",
+        "Stone", "Tin", "Titanium", "Topaz", "Uranium", "Volcanic Rock"
+    }
 }
 
-local function DebugLog(tag, message, logType)
-	logType = logType or "INFO"
-	local timestamp = os.date("%H:%M:%S")
-	local logEntry = string.format("[%s] [%s] [%s] %s", timestamp, tag, logType, message)
-	
-	table.insert(DEBUG.Logs, logEntry)
-	if #DEBUG.Logs > DEBUG.MaxLogs then table.remove(DEBUG.Logs, 1) end
-	
-	print(logEntry)
-end
+-- ===================== LOOKUP TABLES O(1) =====================
+local ZONES_LOOKUP, ROCKS_LOOKUP, ORES_LOOKUP = {}, {}, {}
 
-_G.DebugLog = DebugLog
+-- Inisialisasi lookup tables (sangat cepat untuk validasi)
+for _, v in ipairs(DATA.Zones) do ZONES_LOOKUP[v] = true end
+for _, v in ipairs(DATA.Rocks) do ROCKS_LOOKUP[v] = true end
+for _, v in ipairs(DATA.Ores) do ORES_LOOKUP[v] = true end
 
---// State
-local scriptRunning = true
-local minimized = false
-local globalConnections = {}
-local tabConnections = {}
-
-local function track(scope, conn) 
-	table.insert(scope, conn)
-	return conn 
-end
-
-local function disconnectAll(scope)
-	for _, c in ipairs(scope) do 
-		if c and c.Connected then c:Disconnect() end 
-	end
-	table.clear(scope)
-end
-
---// Theme
-local WHITE = Color3.fromRGB(255, 255, 255)
-local THEME = {
-	MainBg = Color3.fromRGB(15, 15, 15),
-	PanelBg = Color3.fromRGB(22, 22, 22),
-	ContentBg = Color3.fromRGB(12, 12, 12),
-	TitleBg = Color3.fromRGB(45, 10, 10),
-	Accent = Color3.fromRGB(220, 50, 50),
-	Button = Color3.fromRGB(40, 10, 10),
-	ButtonHover = Color3.fromRGB(80, 30, 30),
-	ButtonActive = Color3.fromRGB(90, 20, 20),
-	Header = Color3.fromRGB(60, 15, 15),
-	Holder = Color3.fromRGB(28, 28, 28),
-	Text = WHITE,
-	BoxOn = Color3.fromRGB(220, 50, 50),
-	BoxOff = Color3.fromRGB(50, 50, 50),
-	DebugBg = Color3.fromRGB(20, 20, 20),
+-- ===================== KONFIGURASI GUI =====================
+local CONFIG = {
+    -- GUI Sliders
+    TweenSpeed = 50,        -- Range: 20-80
+    YOffset = -6,           -- Range: -7 to 7
+    MiningInterval = 0.5,
+    
+    -- Game Constants
+    OreThreshold = 45,      -- Ore muncul saat health < 45%
+    
+    -- Performance Settings
+    ScanInterval = 20,
+    MaxSwingsPerRock = 100,
+    SwingSampleSize = 10
 }
 
---// UI Helpers
-local function uiCorner(parent, radius)
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, radius)
-	c.Parent = parent
-	return c
+-- ===================== SISTEM UTAMA =====================
+local SYSTEMS = {
+    -- State Management
+    MiningActive = false,
+    CurrentRock = nil,
+    NextRock = nil,
+    Connection = nil,
+    
+    -- Remote Cache
+    MiningRemote = nil,
+    
+    -- Instance Cache (LRU Pattern)
+    Cache = {
+        Zones = {},        -- ZoneName → ZoneInstance
+        Rocks = {},        -- RockName → {rock, zone, oreType}
+        ZoneRocks = {},    -- ZoneName → {rock1, rock2, ...}
+        LastUpdate = 0
+    },
+    
+    -- Filter System
+    Filter = {
+        Zones = {},        -- ZoneName → boolean
+        Rocks = {},        -- RockName → boolean  
+        Ores = {},         -- OreName → boolean
+        IsActive = false
+    },
+    
+    -- Swing Prediction
+    Predictor = {
+        Samples = {},           -- Global damage samples
+        RockData = {},          -- Per-rock data
+        AverageDamage = 20,     -- Default value
+    }
+}
+
+-- ===================== INISIALISASI FILTER =====================
+for _, zone in ipairs(DATA.Zones) do SYSTEMS.Filter.Zones[zone] = false end
+for _, rock in ipairs(DATA.Rocks) do SYSTEMS.Filter.Rocks[rock] = false end
+for _, ore in ipairs(DATA.Ores) do SYSTEMS.Filter.Ores[ore] = false end
+
+-- ===================== FUNGSI UTAMA =====================
+
+-- Fungsi untuk mendapatkan mining remote (lazy loading)
+local function getMiningRemote()
+    if not SYSTEMS.MiningRemote then
+        SYSTEMS.MiningRemote = ReplicatedStorage:WaitForChild("Shared")
+            :WaitForChild("Packages"):WaitForChild("Knit")
+            :WaitForChild("Services"):WaitForChild("ToolService")
+            :WaitForChild("RF"):WaitForChild("ToolActivated")
+    end
+    return SYSTEMS.MiningRemote
 end
 
-local function mkLabel(parent, text, baseSize, bold)
-	local lb = Instance.new("TextLabel")
-	lb.BackgroundTransparency = 1
-	lb.Text = text
-	lb.Font = bold and Enum.Font.GothamBold or Enum.Font.GothamMedium
-	lb.TextSize = FS(baseSize)
-	lb.TextColor3 = THEME.Text
-	lb.TextWrapped = true
-	lb.TextXAlignment = Enum.TextXAlignment.Left
-	lb.Parent = parent
-	return lb
+-- Fungsi untuk update status filter
+local function updateFilterStatus()
+    local active = false
+    
+    -- Cek jika ada filter yang aktif
+    for _, enabled in pairs(SYSTEMS.Filter.Zones) do
+        if enabled then active = true; break end
+    end
+    
+    if not active then
+        for _, enabled in pairs(SYSTEMS.Filter.Rocks) do
+            if enabled then active = true; break end
+        end
+    end
+    
+    if not active then
+        for _, enabled in pairs(SYSTEMS.Filter.Ores) do
+            if enabled then active = true; break end
+        end
+    end
+    
+    SYSTEMS.Filter.IsActive = active
+    return active
 end
 
-local function mkButton(parent, text, baseSize)
-	local b = Instance.new("TextButton")
-	b.AutoButtonColor = false
-	b.Text = text
-	b.Font = Enum.Font.GothamBold
-	b.TextSize = FS(baseSize)
-	b.TextColor3 = THEME.Text
-	b.TextWrapped = true
-	b.BackgroundColor3 = THEME.Button
-	b.Parent = parent
-	return b
+-- Fungsi untuk validasi apakah rock lolos filter
+local function rockPassesFilter(rockName, oreType)
+    if not SYSTEMS.Filter.IsActive then return true end
+    
+    -- Cek rock filter
+    if SYSTEMS.Filter.Rocks[rockName] then
+        return true
+    end
+    
+    -- Cek ore filter
+    if oreType and SYSTEMS.Filter.Ores[oreType] then
+        return true
+    end
+    
+    return false
 end
 
---// GUI ROOT
-local gui = Instance.new("ScreenGui")
-gui.Name = "lprxsw_Forge_MAX_GUI"
-gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
-gui.DisplayOrder = 999
-gui.Parent = playerGui
-
-local function stopScript()
-	if not scriptRunning then return end
-	scriptRunning = false
-	if _G.FarmLoop ~= nil then _G.FarmLoop = false end
-	if _G.Settings then _G.Settings.AutoFarm = false end
-	Settings.AutoFarm = false
-	disconnectAll(tabConnections)
-	disconnectAll(globalConnections)
-	DebugLog("GUI", "Script stopped", "SUCCESS")
-	gui:Destroy()
+-- Fungsi untuk validasi apakah zone lolos filter
+local function zonePassesFilter(zoneName)
+    if not SYSTEMS.Filter.IsActive then return true end
+    return SYSTEMS.Filter.Zones[zoneName] == true
 end
 
---// MAIN FRAME
-local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.fromOffset(TARGET_W, TARGET_H)
-MainFrame.Position = UDim2.new(0.5, -TARGET_W/2, 0.5, -TARGET_H/2)
-MainFrame.BackgroundColor3 = THEME.MainBg
-MainFrame.ClipsDescendants = true
-MainFrame.Parent = gui
-uiCorner(MainFrame, 12)
-
-local Stroke = Instance.new("UIStroke")
-Stroke.Color = THEME.Accent
-Stroke.Thickness = 2
-Stroke.Parent = MainFrame
-
---// TITLE BAR
-local TitleBar = Instance.new("Frame")
-TitleBar.Size = UDim2.new(1, 0, 0, TITLE_H)
-TitleBar.BackgroundColor3 = THEME.TitleBg
-TitleBar.BorderSizePixel = 0
-TitleBar.Parent = MainFrame
-
-local TitleLabel = mkLabel(TitleBar, "  The Forge Core", 16, true)
-TitleLabel.Size = UDim2.new(1, -140, 1, 0)
-TitleLabel.Position = UDim2.new(0, 5, 0, 0)
-
--- Control Buttons
-local btnSize = math.floor(TITLE_H * 0.8)
-local btnY = math.floor((TITLE_H - btnSize)/2)
-
-local CloseBtn = mkButton(TitleBar, "×", 20)
-CloseBtn.Size = UDim2.fromOffset(btnSize, btnSize)
-CloseBtn.Position = UDim2.new(1, -btnSize - 8, 0, btnY)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-uiCorner(CloseBtn, 6)
-
-local MinimizeBtn = mkButton(TitleBar, "−", 20)
-MinimizeBtn.Size = UDim2.fromOffset(btnSize, btnSize)
-MinimizeBtn.Position = UDim2.new(1, -btnSize*2 - 16, 0, btnY)
-MinimizeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-uiCorner(MinimizeBtn, 6)
-
---// PANELS
-local TabFrame = Instance.new("Frame")
-TabFrame.Size = UDim2.new(0, TAB_W, 1, -TITLE_H)
-TabFrame.Position = UDim2.new(0, 0, 0, TITLE_H)
-TabFrame.BackgroundColor3 = THEME.PanelBg
-TabFrame.Parent = MainFrame
-
-local TabLayout = Instance.new("UIListLayout")
-TabLayout.FillDirection = Enum.FillDirection.Vertical
-TabLayout.Padding = UDim.new(0, 8)
-TabLayout.Parent = TabFrame
-
-local TabPad = Instance.new("UIPadding")
-TabPad.PaddingTop = UDim.new(0, 10)
-TabPad.PaddingLeft = UDim.new(0, 8)
-TabPad.PaddingRight = UDim.new(0, 8)
-TabPad.Parent = TabFrame
-
-local ContentFrame = Instance.new("Frame")
-ContentFrame.Size = UDim2.new(1, -TAB_W, 1, -TITLE_H)
-ContentFrame.Position = UDim2.new(0, TAB_W, 0, TITLE_H)
-ContentFrame.BackgroundColor3 = THEME.ContentBg
-ContentFrame.Parent = MainFrame
-
-local ContentScroll = Instance.new("ScrollingFrame")
-ContentScroll.Size = UDim2.new(1, -10, 1, -10)
-ContentScroll.Position = UDim2.new(0, 5, 0, 5)
-ContentScroll.BackgroundTransparency = 1
-ContentScroll.ScrollBarThickness = IS_MOBILE and 12 or 8
-ContentScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-ContentScroll.Parent = ContentFrame
-
-local scrollPad1 = Instance.new("UIPadding", ContentScroll)
-scrollPad1.PaddingTop = UDim.new(0, 10)
-scrollPad1.PaddingLeft = UDim.new(0, 10)
-scrollPad1.PaddingRight = UDim.new(0, 4)
-
-local ContentLayout = Instance.new("UIListLayout")
-ContentLayout.Padding = UDim.new(0, 10)
-ContentLayout.Parent = ContentScroll
-
---// LOGIC: MINIMIZE
-local function toggleMinimize()
-	minimized = not minimized
-	if minimized then
-		MainFrame:TweenSize(UDim2.fromOffset(200, TITLE_H), "Out", "Quad", 0.3, true)
-		TabFrame.Visible = false
-		ContentFrame.Visible = false
-		MinimizeBtn.Text = "□"
-	else
-		MainFrame:TweenSize(UDim2.fromOffset(TARGET_W, TARGET_H), "Out", "Quad", 0.3, true)
-		MinimizeBtn.Text = "−"
-		task.delay(0.3, function() 
-			if not minimized then 
-				TabFrame.Visible = true
-				ContentFrame.Visible = true 
-			end 
-		end)
-	end
+-- ===================== SCANNING SYSTEM =====================
+-- Berdasarkan struktur: Workspace.Rocks.Zone.SpawnLocation.Rock
+local function scanWorkspace()
+    local startTime = tick()
+    local rocksFolder = Workspace:FindFirstChild("Rocks")
+    
+    if not rocksFolder then
+        warn("Folder 'Rocks' tidak ditemukan di Workspace!")
+        return
+    end
+    
+    -- Reset cache
+    local newCache = {
+        Zones = {},
+        Rocks = {},
+        ZoneRocks = {},
+        LastUpdate = tick()
+    }
+    
+    -- Iterasi melalui semua zone
+    for _, zone in ipairs(rocksFolder:GetChildren()) do
+        local zoneName = zone.Name
+        
+        -- Validasi zone
+        if not ZONES_LOOKUP[zoneName] then
+            continue  -- Zone tidak valid, skip
+        end
+        
+        -- Filter zone jika aktif
+        if SYSTEMS.Filter.IsActive and not zonePassesFilter(zoneName) then
+            continue
+        end
+        
+        -- Zone lolos semua filter
+        newCache.Zones[zoneName] = zone
+        newCache.ZoneRocks[zoneName] = {}
+        
+        -- Cari SpawnLocation (Part) di dalam Zone
+        for _, spawnLocation in ipairs(zone:GetChildren()) do
+            -- SpawnLocation harus Part
+            if not spawnLocation:IsA("BasePart") then
+                continue
+            end
+            
+            -- Cek pattern nama SpawnLocation
+            if not (string.find(spawnLocation.Name:lower(), "spawn") or 
+                    spawnLocation.Name == "SpawnLocation") then
+                continue
+            end
+            
+            -- Iterasi melalui semua Rock (Model) di SpawnLocation
+            for _, rock in ipairs(spawnLocation:GetChildren()) do
+                local rockName = rock.Name
+                
+                -- Validasi rock
+                if not ROCKS_LOOKUP[rockName] or not rock:IsA("Model") then
+                    continue
+                end
+                
+                -- Validasi health dan ownership
+                local health = rock:GetAttribute("Health")
+                local owner = rock:GetAttribute("LastHitPlayer")
+                
+                if not health or health <= 0 then
+                    continue  -- Rock sudah hancur
+                end
+                
+                if owner and owner ~= USER_ID then
+                    continue  -- Dimiliki pemain lain
+                end
+                
+                -- Dapatkan ore type dari attribute rock
+                local oreType = rock:GetAttribute("Ore")
+                
+                -- Filter rock
+                if not rockPassesFilter(rockName, oreType) then
+                    continue
+                end
+                
+                -- Rock valid, tambahkan ke cache
+                local rockData = {
+                    Instance = rock,
+                    Zone = zoneName,
+                    Name = rockName,
+                    OreType = oreType,
+                    Health = health,
+                    Position = rock:GetPivot().Position
+                }
+                
+                table.insert(newCache.ZoneRocks[zoneName], rockData)
+                newCache.Rocks[rockName] = rockData
+            end
+        end
+    end
+    
+    -- Update cache system
+    SYSTEMS.Cache = newCache
+    
+    -- Logging
+    local scanTime = tick() - startTime
+    local rockCount = 0
+    for _, rocks in pairs(SYSTEMS.Cache.ZoneRocks) do
+        rockCount = rockCount + #rocks
+    end
+    
+    print(string.format("✅ Scan selesai: %.3f detik", scanTime))
+    print(string.format("📁 Zones: %d", countTable(SYSTEMS.Cache.Zones)))
+    print(string.format("🪨 Rocks: %d", rockCount))
+    
+    return true
 end
 
-track(globalConnections, MinimizeBtn.Activated:Connect(toggleMinimize))
-track(globalConnections, CloseBtn.Activated:Connect(stopScript))
+-- ===================== SWING PREDICTION SYSTEM =====================
+-- Sistem prediksi untuk mengetahui swing terakhir
 
---// LOGIC: DRAG (Title Only)
-local dragInput, dragStart, startPos
-
-local function update(input)
-	local delta = input.Position - dragStart
-	MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+local function updateSwingPrediction(rock, newHealth)
+    if not rock then return end
+    
+    local rockKey = tostring(rock)
+    local oldHealth = SYSTEMS.Predictor.RockData[rockKey] and 
+                      SYSTEMS.Predictor.RockData[rockKey].LastHealth
+    
+    if oldHealth and oldHealth > 0 then
+        local damage = oldHealth - newHealth
+        
+        if damage > 0 then
+            -- Update global samples
+            table.insert(SYSTEMS.Predictor.Samples, damage)
+            if #SYSTEMS.Predictor.Samples > CONFIG.SwingSampleSize then
+                table.remove(SYSTEMS.Predictor.Samples, 1)
+            end
+            
+            -- Update average damage
+            local total = 0
+            for _, dmg in ipairs(SYSTEMS.Predictor.Samples) do
+                total = total + dmg
+            end
+            SYSTEMS.Predictor.AverageDamage = math.floor(total / #SYSTEMS.Predictor.Samples)
+            
+            -- Update rock-specific data
+            if not SYSTEMS.Predictor.RockData[rockKey] then
+                SYSTEMS.Predictor.RockData[rockKey] = {
+                    DamageHistory = {},
+                    LastHealth = newHealth
+                }
+            end
+            
+            local rockData = SYSTEMS.Predictor.RockData[rockKey]
+            table.insert(rockData.DamageHistory, damage)
+            if #rockData.DamageHistory > 5 then
+                table.remove(rockData.DamageHistory, 1)
+            end
+        end
+    end
+    
+    -- Update last health
+    if SYSTEMS.Predictor.RockData[rockKey] then
+        SYSTEMS.Predictor.RockData[rockKey].LastHealth = newHealth
+    end
 end
 
-track(globalConnections, TitleBar.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-		if input.Position.X > MinimizeBtn.AbsolutePosition.X then return end
-		dragStart = input.Position
-		startPos = MainFrame.Position
-		input.Changed:Connect(function()
-			if input.UserInputState == Enum.UserInputState.End then dragStart = nil end
-		end)
-	end
-end))
-
-track(globalConnections, TitleBar.InputChanged:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-		if dragStart then update(input) end
-	end
-end))
-
---// COMPONENTS
-local function clearContent()
-	disconnectAll(tabConnections)
-	for _, c in ipairs(ContentScroll:GetChildren()) do
-		if not c:IsA("UILayout") and not c:IsA("UIPadding") then 
-			c:Destroy() 
-		end
-	end
-	ContentScroll.CanvasPosition = Vector2.zero
+local function predictRemainingSwings(rock)
+    if not rock then return 0 end
+    
+    local currentHealth = rock:GetAttribute("Health") or 0
+    local rockKey = tostring(rock)
+    local rockData = SYSTEMS.Predictor.RockData[rockKey]
+    
+    -- Jika ada data spesifik rock, gunakan itu
+    if rockData and #rockData.DamageHistory > 0 then
+        local total = 0
+        for _, dmg in ipairs(rockData.DamageHistory) do
+            total = total + dmg
+        end
+        local rockAvg = math.floor(total / #rockData.DamageHistory)
+        
+        -- Weighted average: 70% rock-specific, 30% global
+        local weightedAvg = math.floor((rockAvg * 0.7) + (SYSTEMS.Predictor.AverageDamage * 0.3))
+        
+        if weightedAvg > 0 then
+            return math.ceil(currentHealth / weightedAvg)
+        end
+    end
+    
+    -- Fallback ke global average
+    if SYSTEMS.Predictor.AverageDamage > 0 then
+        return math.ceil(currentHealth / SYSTEMS.Predictor.AverageDamage)
+    end
+    
+    return math.ceil(currentHealth / 20)  -- Default fallback
 end
 
-local function createTabButton(text)
-	local btn = mkButton(TabFrame, text, 12)
-	btn.Size = UDim2.new(1, 0, 0, IS_MOBILE and 50 or 40)
-	uiCorner(btn, 8)
-	return btn
+-- ===================== MOVEMENT SYSTEM =====================
+-- Sistem pergerakan dengan NoClip dan Anti-Gravity
+
+local function prepareCharacter(character)
+    if not character then return false end
+    
+    -- Enable NoClip
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+    
+    -- Enable Anti-Gravity
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid.PlatformStand = true
+    end
+    
+    return true
 end
 
-local curTabBtn = nil
-
-local function setTabSelected(btn)
-	if curTabBtn then curTabBtn.BackgroundColor3 = THEME.Button end
-	curTabBtn = btn
-	btn.BackgroundColor3 = THEME.ButtonActive
+local function restoreCharacter(character)
+    if not character then return false end
+    
+    -- Disable NoClip
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = true
+        end
+    end
+    
+    -- Disable Anti-Gravity
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid.PlatformStand = false
+    end
+    
+    return true
 end
 
-local function createSearchBar(parent, onSearch)
-	local box = Instance.new("TextBox")
-	box.Size = UDim2.new(1, 0, 0, 35)
-	box.PlaceholderText = "Search..."
-	box.Text = ""
-	box.BackgroundColor3 = THEME.Holder
-	box.TextColor3 = WHITE
-	box.Font = Enum.Font.Gotham
-	box.TextSize = FS(14)
-	box.Parent = parent
-	uiCorner(box, 8)
-	
-	track(tabConnections, box:GetPropertyChangedSignal("Text"):Connect(function()
-		onSearch(box.Text)
-	end))
-	return box
+local function moveToRock(character, targetPosition)
+    if not character then return false end
+    
+    local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+    if not humanoidRootPart then return false end
+    
+    -- Hitung posisi target dengan Y offset
+    local targetPos = Vector3.new(
+        targetPosition.X,
+        targetPosition.Y + CONFIG.YOffset,
+        targetPosition.Z
+    )
+    
+    -- Hitung jarak dan durasi
+    local distance = (humanoidRootPart.Position - targetPos).Magnitude
+    local actualSpeed = CONFIG.TweenSpeed * 2  -- Konversi: 20-80 → 40-160 studs/detik
+    local duration = distance / actualSpeed
+    
+    -- Buat tween
+    local tween = TweenService:Create(
+        humanoidRootPart,
+        TweenInfo.new(duration, Enum.EasingStyle.Linear),
+        {Position = targetPos}
+    )
+    
+    -- Persiapan karakter
+    prepareCharacter(character)
+    
+    -- Jalankan tween
+    tween:Play()
+    
+    -- Tunggu tween selesai (non-blocking)
+    local startTime = tick()
+    while tick() - startTime < duration do
+        if not SYSTEMS.MiningActive then break end
+        RunService.Heartbeat:Wait()
+    end
+    
+    -- Batalkan jika masih berjalan
+    if tween.PlaybackState == Enum.PlaybackState.Playing then
+        tween:Cancel()
+    end
+    
+    -- Hadapkan karakter ke target
+    local direction = (targetPosition - humanoidRootPart.Position).Unit
+    humanoidRootPart.CFrame = CFrame.lookAt(
+        humanoidRootPart.Position,
+        humanoidRootPart.Position + Vector3.new(direction.X, 0, direction.Z)
+    )
+    
+    return true
 end
 
-local function createCheckbox(parent, text, val, cb)
-	local row = Instance.new("Frame")
-	row.Size = UDim2.new(1, 0, 0, 45)
-	row.BackgroundTransparency = 1
-	row.Parent = parent
-	
-	local btn = Instance.new("TextButton")
-	btn.Size = UDim2.fromOffset(45, 35)
-	btn.Position = UDim2.new(0, 0, 0.5, -17.5)
-	btn.Text = ""
-	btn.AutoButtonColor = false
-	btn.BackgroundColor3 = val and THEME.BoxOn or THEME.BoxOff
-	btn.Parent = row
-	uiCorner(btn, 8)
-	
-	local lbl = mkLabel(row, text, 14, true)
-	lbl.Size = UDim2.new(1, -55, 1, 0)
-	lbl.Position = UDim2.new(0, 55, 0, 0)
-	
-	track(tabConnections, btn.Activated:Connect(function()
-		val = not val
-		btn.BackgroundColor3 = val and THEME.BoxOn or THEME.BoxOff
-		cb(val)
-		DebugLog("SETTINGS", "Toggled: " .. text .. " = " .. tostring(val), "DEBUG")
-	end))
-	
-	return row
+-- ===================== MINING PROCESS =====================
+-- Proses mining untuk satu rock
+
+local function mineRock(rockData)
+    if not rockData or not SYSTEMS.MiningActive then return false end
+    
+    local character = localPlayer.Character
+    if not character then return false end
+    
+    local rock = rockData.Instance
+    local rockName = rockData.Name
+    local oreType = rockData.OreType
+    local zoneName = rockData.Zone
+    
+    print(string.format("🚀 Menuju: %s (Zone: %s, Ore: %s)", 
+        rockName, zoneName, oreType or "Unknown"))
+    
+    -- Bergerak ke rock
+    if not moveToRock(character, rockData.Position) then
+        print("❌ Gagal bergerak ke rock")
+        return false
+    end
+    
+    print("✅ Sampai di posisi rock")
+    
+    -- Tunggu stabilisasi
+    wait(0.5)
+    
+    -- Validasi ulang rock sebelum mining
+    local health = rock:GetAttribute("Health")
+    local owner = rock:GetAttribute("LastHitPlayer")
+    
+    if not health or health <= 0 then
+        print("❌ Rock sudah hancur")
+        return false
+    end
+    
+    if owner and owner ~= USER_ID then
+        print("❌ Rock dimiliki pemain lain")
+        return false
+    end
+    
+    SYSTEMS.CurrentRock = rock
+    
+    -- Proses mining
+    local swingCount = 0
+    local oreSpawned = false
+    local maxSwings = CONFIG.MaxSwingsPerRock
+    
+    while SYSTEMS.MiningActive and swingCount < maxSwings do
+        -- Cek validitas rock
+        if not rock or not rock.Parent then
+            print("❌ Rock tidak ditemukan")
+            break
+        end
+        
+        local currentHealth = rock:GetAttribute("Health")
+        if not currentHealth or currentHealth <= 0 then
+            print(string.format("✅ Rock hancur: %s", rockName))
+            
+            if oreSpawned then
+                print(string.format("💰 Ore dikumpulkan: %s", oreType or "Unknown"))
+            end
+            
+            break
+        end
+        
+        -- Cek ownership
+        local currentOwner = rock:GetAttribute("LastHitPlayer")
+        if currentOwner and currentOwner ~= USER_ID then
+            print("❌ Kepemilikan berubah")
+            break
+        end
+        
+        -- Cek jika ore muncul
+        if not oreSpawned and currentHealth < CONFIG.OreThreshold then
+            oreSpawned = true
+            print(string.format("💎 Ore muncul: %s (Health: %d)", 
+                oreType or "Unknown", currentHealth))
+        end
+        
+        -- Prediksi swing tersisa
+        local remainingSwings = predictRemainingSwings(rock)
+        
+        -- Persiapan target berikutnya jika sudah dekat akhir
+        if remainingSwings <= 3 and not SYSTEMS.NextRock then
+            print(string.format("🎯 Mempersiapkan target berikutnya (%d swing tersisa)", remainingSwings))
+            
+            -- Cari target berikutnya secara async
+            task.spawn(function()
+                SYSTEMS.NextRock = findNextRock(rock)
+            end)
+        end
+        
+        -- Log prediksi
+        if remainingSwings <= 5 then
+            print(string.format("⏳ %s: %d HP (~%d swing tersisa)", 
+                rockName, currentHealth, remainingSwings))
+        end
+        
+        -- Eksekusi mining action
+        local success = pcall(function()
+            getMiningRemote():InvokeServer("Pickaxe")
+        end)
+        
+        if success then
+            swingCount = swingCount + 1
+            
+            -- Update swing prediction
+            local newHealth = rock:GetAttribute("Health")
+            updateSwingPrediction(rock, newHealth)
+            
+            -- Log swing terakhir yang diprediksi
+            if remainingSwings <= 2 then
+                print("⚡ SWING TERAKHIR DIPREDIKSI - Siap beralih")
+            end
+        else
+            print("❌ Mining action gagal")
+        end
+        
+        -- Tunggu interval mining
+        wait(CONFIG.MiningInterval)
+    end
+    
+    -- Reset state
+    if SYSTEMS.CurrentRock == rock then
+        SYSTEMS.CurrentRock = nil
+    end
+    
+    -- Restore karakter
+    restoreCharacter(character)
+    
+    return swingCount > 0
 end
 
-local function createSlider(parent, text, min, max, val, cb)
-	local h = Instance.new("Frame")
-	h.Size = UDim2.new(1, 0, 0, 60)
-	h.BackgroundTransparency = 1
-	h.Parent = parent
-	
-	local lbl = mkLabel(h, text .. ": " .. val, 12, false)
-	lbl.Size = UDim2.new(1, 0, 0, 25)
-	
-	local bar = Instance.new("Frame")
-	bar.Size = UDim2.new(1, -10, 0, 10)
-	bar.Position = UDim2.new(0, 5, 0, 35)
-	bar.BackgroundColor3 = THEME.Holder
-	bar.Parent = h
-	uiCorner(bar, 5)
-	
-	local knob = Instance.new("Frame")
-	knob.Size = UDim2.fromOffset(20, 20)
-	knob.BackgroundColor3 = THEME.Accent
-	knob.Parent = bar
-	uiCorner(knob, 10)
-	knob.Position = UDim2.new((val - min) / (max - min), -10, 0.5, -10)
-	
-	local dragging = false
-	
-	local function update(input)
-		local rel = math.clamp((input.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
-		val = math.floor(min + (max - min) * rel)
-		knob.Position = UDim2.new(rel, -10, 0.5, -10)
-		lbl.Text = text .. ": " .. val
-		cb(val)
-	end
-	
-	track(tabConnections, bar.InputBegan:Connect(function(i) 
-		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = true
-			update(i)
-		end
-	end))
-	
-	track(tabConnections, UserInputService.InputEnded:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then 
-			dragging = false 
-		end
-	end))
-	
-	track(tabConnections, UserInputService.InputChanged:Connect(function(i)
-		if dragging and (i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseMovement) then 
-			update(i) 
-		end
-	end))
+-- ===================== TARGET SELECTION =====================
+-- Sistem pemilihan target berikutnya
+
+local function findNextRock(currentRock)
+    local cache = SYSTEMS.Cache
+    
+    for zoneName, rocks in pairs(cache.ZoneRocks) do
+        for _, rockData in ipairs(rocks) do
+            local rock = rockData.Instance
+            
+            -- Skip rock yang sedang ditambang
+            if rock == currentRock then
+                continue
+            end
+            
+            -- Validasi rock
+            if not rock or not rock.Parent then
+                continue
+            end
+            
+            local health = rock:GetAttribute("Health")
+            local owner = rock:GetAttribute("LastHitPlayer")
+            
+            if not health or health <= 0 then
+                continue
+            end
+            
+            if owner and owner ~= USER_ID then
+                continue
+            end
+            
+            -- Rock valid, return
+            return rockData
+        end
+    end
+    
+    return nil
 end
 
-local function createCollapsible(title, list, setTable, setKey)
-	ensureBranch(Settings, setKey)
-	ensureBranch(_G.Settings, setKey)
-	
-	local holder = Instance.new("Frame")
-	holder.AutomaticSize = Enum.AutomaticSize.Y
-	holder.Size = UDim2.new(1, 0, 0, 0)
-	holder.BackgroundTransparency = 1
-	holder.Parent = ContentScroll
-	
-	local head = mkButton(holder, "► " .. title, 14)
-	head.Size = UDim2.new(1, 0, 0, 40)
-	head.BackgroundColor3 = THEME.Header
-	uiCorner(head, 8)
-	
-	local content = Instance.new("Frame")
-	content.Size = UDim2.new(1, 0, 0, 0)
-	content.Visible = false
-	content.ClipsDescendants = true
-	content.BackgroundColor3 = THEME.Holder
-	content.Parent = holder
-	uiCorner(content, 8)
-	
-	local cLay = Instance.new("UIListLayout")
-	cLay.Parent = content
-	cLay.Padding = UDim.new(0, 5)
-	
-	local cPad1 = Instance.new("UIPadding", content)
-	cPad1.PaddingTop = UDim.new(0, 10)
-	cPad1.PaddingLeft = UDim.new(0, 10)
-	
-	local allItems = {}
-	
-	local searchRow = Instance.new("Frame")
-	searchRow.Size = UDim2.new(1, -20, 0, 35)
-	searchRow.BackgroundTransparency = 1
-	searchRow.Parent = content
-	
-	createSearchBar(searchRow, function(text)
-		text = text:lower()
-		local visCount = 0
-		for name, row in pairs(allItems) do
-			if name:lower():find(text) then
-				row.Visible = true
-				visCount = visCount + 1
-			else
-				row.Visible = false
-			end
-		end
-		if content.Visible then
-			content.Size = UDim2.new(1, 0, 0, cLay.AbsoluteContentSize.Y + 20)
-		end
-	end)
+-- ===================== MAIN MINING LOOP =====================
 
-	for _, name in ipairs(list) do
-		local row = Instance.new("Frame")
-		row.Size = UDim2.new(1, -20, 0, 40)
-		row.BackgroundTransparency = 1
-		row.Parent = content
-		
-		local btn = Instance.new("TextButton")
-		btn.Size = UDim2.fromOffset(30, 30)
-		btn.Position = UDim2.new(0, 0, 0.5, -15)
-		local isActive = setTable[name]
-		btn.BackgroundColor3 = isActive and THEME.BoxOn or THEME.BoxOff
-		btn.Text = ""
-		btn.Parent = row
-		uiCorner(btn, 6)
-		
-		local lb = mkLabel(row, name, 13, false)
-		lb.Size = UDim2.new(1, -40, 1, 0)
-		lb.Position = UDim2.new(0, 40, 0, 0)
-		
-		track(tabConnections, btn.Activated:Connect(function()
-			isActive = not isActive
-			btn.BackgroundColor3 = isActive and THEME.BoxOn or THEME.BoxOff
-			setTable[name] = isActive
-			_G.Settings[setKey][name] = isActive
-			DebugLog("SELECT", setKey .. ": " .. name .. " = " .. tostring(isActive), "DEBUG")
-		end))
-		
-		allItems[name] = row
-	end
-	
-	local expanded = false
-	track(tabConnections, head.Activated:Connect(function()
-		expanded = not expanded
-		head.Text = (expanded and "▼ " or "► ") .. title
-		content.Visible = expanded
-		if expanded then
-			content.Size = UDim2.new(1, 0, 0, cLay.AbsoluteContentSize.Y + 20)
-		else
-			content.Size = UDim2.new(1, 0, 0, 0)
-		end
-	end))
+local function miningLoop()
+    if not SYSTEMS.MiningActive then return end
+    
+    while SYSTEMS.MiningActive do
+        local character = localPlayer.Character
+        if not character then
+            wait(2)
+            continue
+        end
+        
+        -- Pilih target
+        local targetRock = nil
+        
+        if SYSTEMS.NextRock then
+            -- Gunakan target yang sudah dipersiapkan
+            targetRock = SYSTEMS.NextRock
+            SYSTEMS.NextRock = nil
+            print(string.format("🎯 Menggunakan target yang sudah dipersiapkan: %s", 
+                targetRock.Name))
+        else
+            -- Cari target baru
+            targetRock = findNextRock(SYSTEMS.CurrentRock)
+        end
+        
+        -- Proses mining
+        if targetRock then
+            mineRock(targetRock)
+        else
+            print("⏳ Tidak ada rock yang tersedia, rescan...")
+            wait(2)
+        end
+        
+        -- Periodic rescan
+        if tick() - SYSTEMS.Cache.LastUpdate > CONFIG.ScanInterval then
+            task.spawn(scanWorkspace)
+        end
+    end
+    
+    -- Restore character state saat berhenti
+    local character = localPlayer.Character
+    if character then
+        restoreCharacter(character)
+    end
 end
 
---// [TAMBAH] BUILD DEBUG TAB (FIXED)
-local function buildDebug()
-	clearContent()
-	
-	-- Status Header
-	local statusHolder = Instance.new("Frame")
-	statusHolder.Size = UDim2.new(1, 0, 0, 0)
-	statusHolder.BackgroundTransparency = 1
-	statusHolder.AutomaticSize = Enum.AutomaticSize.Y
-	statusHolder.Parent = ContentScroll
-	
-	local statusLay = Instance.new("UIListLayout")
-	statusLay.Parent = statusHolder
-	statusLay.Padding = UDim.new(0, 5)
-	
-	local lblAutoFarm = mkLabel(statusHolder, "AutoFarm: OFF", 12, false)
-	lblAutoFarm.Size = UDim2.new(1, 0, 0, 30)
-	lblAutoFarm.BackgroundColor3 = THEME.Holder
-	lblAutoFarm.BackgroundTransparency = 0
-	uiCorner(lblAutoFarm, 6)
-	
-	local lblTarget = mkLabel(statusHolder, "Target: None", 12, false)
-	lblTarget.Size = UDim2.new(1, 0, 0, 30)
-	lblTarget.BackgroundColor3 = THEME.Holder
-	lblTarget.BackgroundTransparency = 0
-	uiCorner(lblTarget, 6)
-	
-	local lblHP = mkLabel(statusHolder, "Target HP: --", 12, false)
-	lblHP.Size = UDim2.new(1, 0, 0, 30)
-	lblHP.BackgroundColor3 = THEME.Holder
-	lblHP.BackgroundTransparency = 0
-	uiCorner(lblHP, 6)
-	
-	local lblDist = mkLabel(statusHolder, "Distance: --", 12, false)
-	lblDist.Size = UDim2.new(1, 0, 0, 30)
-	lblDist.BackgroundColor3 = THEME.Holder
-	lblDist.BackgroundTransparency = 0
-	uiCorner(lblDist, 6)
-	
-	-- [UBAH] Log Viewer (Fixed Size)
-	local logHolder = Instance.new("Frame")
-	logHolder.Size = UDim2.new(1, 0, 0, 200)
-	logHolder.BackgroundColor3 = THEME.DebugBg
-	logHolder.Parent = ContentScroll
-	uiCorner(logHolder, 8)
-	
-	local logScroll = Instance.new("ScrollingFrame")
-	logScroll.Size = UDim2.new(1, -10, 1, -10)
-	logScroll.Position = UDim2.new(0, 5, 0, 5)
-	logScroll.BackgroundTransparency = 1
-	logScroll.ScrollBarThickness = 6
-	logScroll.CanvasSize = UDim2.new(1, 0, 0, 0)
-	logScroll.Parent = logHolder
-	
-	local logLabel = Instance.new("TextLabel")
-	logLabel.Size = UDim2.new(1, -10, 0, 0)
-	logLabel.BackgroundTransparency = 1
-	logLabel.Font = Enum.Font.Courier
-	logLabel.TextSize = FS(9)
-	logLabel.TextColor3 = THEME.Text
-	logLabel.TextXAlignment = Enum.TextXAlignment.Left
-	logLabel.TextYAlignment = Enum.TextYAlignment.Top
-	logLabel.TextWrapped = true
-	logLabel.Parent = logScroll
-	
-	-- [UBAH] Real-time update connection (simplified)
-	local updateConn = RunService.RenderStepped:Connect(function()
-		if not scriptRunning or minimized or not ContentFrame.Visible then return end
-		
-		lblAutoFarm.Text = "AutoFarm: " .. (Settings.AutoFarm and "ON ✓" or "OFF")
-		
-		-- Build log display
-		local logLines = {}
-		for i = math.max(1, #DEBUG.Logs - 15), #DEBUG.Logs do
-			table.insert(logLines, DEBUG.Logs[i])
-		end
-		logLabel.Text = table.concat(logLines, "\n")
-		logScroll.CanvasSize = UDim2.new(1, 0, 0, logLabel.TextSize * (#logLines + 1))
-	end)
-	
-	table.insert(tabConnections, updateConn)
-	
-	DebugLog("DEBUG", "Debug panel opened", "SUCCESS")
+-- ===================== UTILITY FUNCTIONS =====================
+
+local function countTable(tbl, value)
+    if not tbl then return 0 end
+    
+    local count = 0
+    if value ~= nil then
+        for _, v in pairs(tbl) do
+            if v == value then
+                count = count + 1
+            end
+        end
+    else
+        for _ in pairs(tbl) do
+            count = count + 1
+        end
+    end
+    
+    return count
 end
 
---// TABS BUILDER
-local function buildAuto()
-	clearContent()
-	createCheckbox(ContentScroll, "Enable Auto Mining", Settings.AutoFarm, function(v)
-		Settings.AutoFarm = v
-		_G.Settings.AutoFarm = v
-		DebugLog("AUTO", "AutoFarm toggled: " .. tostring(v), "DEBUG")
-	end)
-	createCollapsible("Zones (" .. #DATA.Zones .. ")", DATA.Zones, Settings.Zones, "Zones")
-	createCollapsible("Rocks (" .. #DATA.Rocks .. ")", DATA.Rocks, Settings.Rocks, "Rocks")
-	createCollapsible("Ores (" .. #DATA.Ores .. ")", DATA.Ores, Settings.Ores, "Ores")
+-- ===================== PUBLIC API =====================
+-- Interface untuk GUI
+
+local AutoMiner = {}
+
+-- 1. SAKLAR AUTO MINING
+function AutoMiner.start()
+    if SYSTEMS.MiningActive then
+        warn("⚠️ Auto mining sudah aktif!")
+        return
+    end
+    
+    SYSTEMS.MiningActive = true
+    
+    -- Setup mining remote
+    getMiningRemote()
+    
+    -- Initial scan
+    scanWorkspace()
+    
+    -- Start mining loop
+    SYSTEMS.Connection = RunService.Heartbeat:Connect(function()
+        if SYSTEMS.MiningActive then
+            miningLoop()
+        end
+    end)
+    
+    print("🚀 Auto Mining System Started")
+    print(string.format("⚙️ Tween Speed: %d (Actual: %d studs/sec)", 
+        CONFIG.TweenSpeed, CONFIG.TweenSpeed * 2))
+    print(string.format("⚙️ Y Offset: %d studs", CONFIG.YOffset))
+    print(string.format("⚙️ Mining Interval: %.2f sec", CONFIG.MiningInterval))
 end
 
-local function buildSettings()
-	clearContent()
-	createSlider(ContentScroll, "Tween Speed", 20, 100, Settings.TweenSpeed, function(v)
-		Settings.TweenSpeed = v
-		_G.Settings.TweenSpeed = v
-		DebugLog("SETTINGS", "TweenSpeed changed to " .. v, "DEBUG")
-	end)
-	createSlider(ContentScroll, "Y Offset (Height)", -10, 10, Settings.YOffset, function(v)
-		Settings.YOffset = v
-		_G.Settings.YOffset = v
-		DebugLog("SETTINGS", "YOffset changed to " .. v, "DEBUG")
-	end)
+function AutoMiner.stop()
+    SYSTEMS.MiningActive = false
+    SYSTEMS.CurrentRock = nil
+    SYSTEMS.NextRock = nil
+    
+    if SYSTEMS.Connection then
+        SYSTEMS.Connection:Disconnect()
+        SYSTEMS.Connection = nil
+    end
+    
+    -- Restore character
+    local character = localPlayer.Character
+    if character then
+        restoreCharacter(character)
+    end
+    
+    print("🛑 Auto mining stopped.")
 end
 
---// INIT TABS
-local bAuto = createTabButton("Auto Farm")
-local bSet = createTabButton("Settings")
-local bDebug = createTabButton("Debug")
+function AutoMiner.isActive()
+    return SYSTEMS.MiningActive
+end
 
-track(globalConnections, bAuto.Activated:Connect(function() 
-	setTabSelected(bAuto)
-	buildAuto() 
-end))
+-- 2. SLIDER TWEEN SPEED (20-80)
+function AutoMiner.setTweenSpeed(speed)
+    CONFIG.TweenSpeed = math.clamp(speed, 20, 80)
+    print(string.format("⚙️ Tween Speed diatur: %d", CONFIG.TweenSpeed))
+    return CONFIG.TweenSpeed
+end
 
-track(globalConnections, bSet.Activated:Connect(function() 
-	setTabSelected(bSet)
-	buildSettings() 
-end))
+function AutoMiner.getTweenSpeed()
+    return CONFIG.TweenSpeed
+end
 
-track(globalConnections, bDebug.Activated:Connect(function() 
-	setTabSelected(bDebug)
-	buildDebug() 
-end))
+-- 3. SLIDER Y OFFSET (-7 sampai 7)
+function AutoMiner.setYOffset(offset)
+    CONFIG.YOffset = math.clamp(offset, -7, 7)
+    print(string.format("⚙️ Y Offset diatur: %d", CONFIG.YOffset))
+    return CONFIG.YOffset
+end
 
-setTabSelected(bAuto)
-buildAuto()
+function AutoMiner.getYOffset()
+    return CONFIG.YOffset
+end
 
-DebugLog("STARTUP", "GUI v5 Loaded - Fixed & Optimized", "SUCCESS")
-print("[✓] MAXIMIZED GUI v5 Loaded (FIXED)")
+-- Filter Configuration
+function AutoMiner.setFilter(category, name, value)
+    if SYSTEMS.Filter[category] then
+        SYSTEMS.Filter[category][name] = value
+        updateFilterStatus()
+        return true
+    end
+    return false
+end
+
+function AutoMiner.getFilter(category, name)
+    if SYSTEMS.Filter[category] then
+        return SYSTEMS.Filter[category][name]
+    end
+    return nil
+end
+
+function AutoMiner.getFilterStatus()
+    return {
+        isActive = SYSTEMS.Filter.IsActive,
+        zones = countTable(SYSTEMS.Filter.Zones, true),
+        rocks = countTable(SYSTEMS.Filter.Rocks, true),
+        ores = countTable(SYSTEMS.Filter.Ores, true)
+    }
+end
+
+function AutoMiner.getDataLists()
+    return {
+        Zones = DATA.Zones,
+        Rocks = DATA.Rocks,
+        Ores = DATA.Ores
+    }
+end
+
+-- Stats and Info
+function AutoMiner.getStats()
+    local rockCount = 0
+    for _, rocks in pairs(SYSTEMS.Cache.ZoneRocks) do
+        rockCount = rockCount + #rocks
+    end
+    
+    return {
+        miningActive = SYSTEMS.MiningActive,
+        tweenSpeed = CONFIG.TweenSpeed,
+        yOffset = CONFIG.YOffset,
+        miningInterval = CONFIG.MiningInterval,
+        zones = countTable(SYSTEMS.Cache.Zones),
+        rocks = rockCount,
+        filterActive = SYSTEMS.Filter.IsActive,
+        currentRock = SYSTEMS.CurrentRock and SYSTEMS.CurrentRock.Name or "None",
+        nextRock = SYSTEMS.NextRock and SYSTEMS.NextRock.Name or "None",
+        avgDamage = SYSTEMS.Predictor.AverageDamage
+    }
+end
+
+-- Mining Control
+function AutoMiner.rescan()
+    return scanWorkspace()
+end
+
+-- Swing Prediction
+function AutoMiner.getSwingStats()
+    return {
+        averageDamage = SYSTEMS.Predictor.AverageDamage,
+        sampleCount = #SYSTEMS.Predictor.Samples,
+        rockDataCount = countTable(SYSTEMS.Predictor.RockData)
+    }
+end
+
+function AutoMiner.resetPrediction()
+    SYSTEMS.Predictor = {
+        Samples = {},
+        RockData = {},
+        AverageDamage = 20
+    }
+    print("✅ Swing prediction data direset")
+end
+
+-- Debug
+function AutoMiner.printStatus()
+    print("=== MINING STATUS ===")
+    print(string.format("Aktif: %s", SYSTEMS.MiningActive and "YA" or "TIDAK"))
+    print(string.format("Rock saat ini: %s", 
+        SYSTEMS.CurrentRock and SYSTEMS.CurrentRock.Name or "None"))
+    print(string.format("Target berikutnya: %s", 
+        SYSTEMS.NextRock and SYSTEMS.NextRock.Name or "None"))
+    print(string.format("Tween Speed: %d", CONFIG.TweenSpeed))
+    print(string.format("Y Offset: %d", CONFIG.YOffset))
+    
+    local stats = AutoMiner.getSwingStats()
+    print(string.format("Prediksi Swing - Avg Damage: %d, Samples: %d", 
+        stats.averageDamage, stats.sampleCount))
+end
+
+return AutoMiner
