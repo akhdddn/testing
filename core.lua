@@ -189,9 +189,9 @@ local function StartLock(rootPart, cf)
 
 	if lockHum then
 		prevPlatformStand, prevAutoRotate = lockHum.PlatformStand, lockHum.AutoRotate
-		-- *** PERUBAHAN: JANGAN PLATFORMSTAND TRUE ***
-		-- Biarkan PlatformStand false agar Animate & animasi lain tetap jalan
-		lockHum.PlatformStand = false
+		-- *** IMPLEMENTASI VISUAL SWING FIX ***
+		-- PlatformStand harus FALSE agar animasi swing default Roblox tetap jalan
+		lockHum.PlatformStand = false 
 		lockHum.AutoRotate = false
 	end
 
@@ -539,4 +539,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: CACHED REMOTE + SMART REVEAL")
+print("[✓] FORGE CORE: PLATFORMSTAND OFF (ANIM FIX) + DAMAGE")
