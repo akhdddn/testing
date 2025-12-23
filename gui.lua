@@ -1,869 +1,819 @@
 -- ============================================
--- AUTO MINING SCRIPT - OPTIMIZED VERSION 9.1
--- Struktur yang benar berdasarkan informasi:
--- Workspace.Rocks.Zone (Folder).SpawnLocation (Part).Rock (Model)
+-- GUI SYSTEM - BATIK API & BESI THEME
+-- DELTA EXECUTOR COMPATIBLE VERSION
 -- ============================================
 
-local Players, Workspace, RunService, TweenService, ReplicatedStorage = 
-      game:GetService("Players"), game:GetService("Workspace"), 
-      game:GetService("RunService"), game:GetService("TweenService"),
-      game:GetService("ReplicatedStorage")
+-- Delta Executor compatible GUI system
+local MiningGUI = {
+    Enabled = false,
+    Minimized = false,
+    Dragging = false,
+    DragStart = nil,
+    DragStartPosition = nil
+}
+
+-- Services
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 
 local localPlayer = Players.LocalPlayer
-local USER_ID = localPlayer.UserId
+local AutoMiner = require(script.Parent.AutoMiner) -- Adjust path as needed
 
--- ===================== KONSTANTA & DATA =====================
-local DATA = {
-    Zones = {
-        "Island2CaveDanger1", "Island2CaveDanger2", "Island2CaveDanger3",
-        "Island2CaveDanger4", "Island2CaveDangerClosed", "Island2CaveDeep",
-        "Island2CaveLavaClosed", "Island2CaveMid", "Island2CaveStart",
-        "Island2GoblinCave", "Island2VolcanicDepths"
-    },
-    Rocks = {
-        "Basalt", "Basalt Core", "Basalt Rock", "Basalt Vein", "Boulder",
-        "Crimson Crystal", "Cyan Crystal", "Earth Crystal", "Lava Rock",
-        "Light Crystal", "Lucky Block", "Pebble", "Rock", "Violet Crystal",
-        "Volcanic Rock"
-    },
-    Ores = {
-        "Aite", "Amethyst", "Arcane Crystal", "Bananite", "Blue Crystal",
-        "Boneite", "Cardboardite", "Cobalt", "Copper", "Crimson Crystal",
-        "Cuprite", "Dark Boneite", "Darkryte", "Demonite", "Diamond",
-        "Emerald", "Eye Ore", "Fichillium", "Fichilliumorite", "Fireite",
-        "Galaxite", "Gold", "Grass", "Green Crystal", "Iceite", "Iron",
-        "Jade", "Lapis Lazuli", "Lightite", "Magenta Crystal", "Magmaite",
-        "Meteorite", "Mushroomite", "Mythril", "Obsidian", "Orange Crystal",
-        "Platinum", "Poopite", "Quartz", "Rainbow Crystal", "Rivalite",
-        "Ruby", "Sand Stone", "Sapphire", "Silver", "Slimite", "Starite",
-        "Stone", "Tin", "Titanium", "Topaz", "Uranium", "Volcanic Rock"
-    }
+-- Delta Executor compatible color system
+local COLORS = {
+    Black = Color3.fromRGB(30, 30, 30),
+    DarkRed = Color3.fromRGB(139, 0, 0),
+    Red = Color3.fromRGB(178, 34, 34),
+    White = Color3.fromRGB(255, 255, 255),
+    Gray = Color3.fromRGB(200, 200, 200),
+    DarkGray = Color3.fromRGB(15, 15, 15),
+    BrightRed = Color3.fromRGB(255, 69, 0)
 }
 
--- ===================== LOOKUP TABLES O(1) =====================
-local ZONES_LOOKUP, ROCKS_LOOKUP, ORES_LOOKUP = {}, {}, {}
-
--- Inisialisasi lookup tables (sangat cepat untuk validasi)
-for _, v in ipairs(DATA.Zones) do ZONES_LOOKUP[v] = true end
-for _, v in ipairs(DATA.Rocks) do ROCKS_LOOKUP[v] = true end
-for _, v in ipairs(DATA.Ores) do ORES_LOOKUP[v] = true end
-
--- ===================== KONFIGURASI GUI =====================
-local CONFIG = {
-    -- GUI Sliders
-    TweenSpeed = 50,        -- Range: 20-80
-    YOffset = -6,           -- Range: -7 to 7
-    MiningInterval = 0.5,
-    
-    -- Game Constants
-    OreThreshold = 45,      -- Ore muncul saat health < 45%
-    
-    -- Performance Settings
-    ScanInterval = 20,
-    MaxSwingsPerRock = 100,
-    SwingSampleSize = 10
+-- Font fallbacks for Delta
+local FONTS = {
+    Gotham = Enum.Font.Gotham,
+    Arial = Enum.Font.ArialBold
 }
 
--- ===================== SISTEM UTAMA =====================
-local SYSTEMS = {
-    -- State Management
-    MiningActive = false,
-    CurrentRock = nil,
-    NextRock = nil,
-    Connection = nil,
+-- Create GUI
+function MiningGUI:Create()
+    -- Main ScreenGui
+    self.ScreenGui = Instance.new("ScreenGui")
+    self.ScreenGui.Name = "MiningGUIV2"
+    self.ScreenGui.ResetOnSpawn = false
     
-    -- Remote Cache
-    MiningRemote = nil,
+    -- Main Container
+    self.MainFrame = Instance.new("Frame")
+    self.MainFrame.Name = "MainFrame"
+    self.MainFrame.BackgroundColor3 = COLORS.DarkGray
+    self.MainFrame.BorderSizePixel = 0
+    self.MainFrame.Size = UDim2.new(0, 400, 0, 500)
+    self.MainFrame.Position = UDim2.new(0.5, -200, 0.5, -250)
+    self.MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
     
-    -- Instance Cache (LRU Pattern)
-    Cache = {
-        Zones = {},        -- ZoneName → ZoneInstance
-        Rocks = {},        -- RockName → {rock, zone, oreType}
-        ZoneRocks = {},    -- ZoneName → {rock1, rock2, ...}
-        LastUpdate = 0
-    },
+    -- Simple border effect (Delta compatible)
+    local border = Instance.new("Frame")
+    border.Name = "Border"
+    border.BackgroundColor3 = COLORS.Red
+    border.BorderSizePixel = 0
+    border.Size = UDim2.new(1, 4, 1, 4)
+    border.Position = UDim2.new(0, -2, 0, -2)
+    border.ZIndex = 0
+    border.Parent = self.MainFrame
     
-    -- Filter System
-    Filter = {
-        Zones = {},        -- ZoneName → boolean
-        Rocks = {},        -- RockName → boolean  
-        Ores = {},         -- OreName → boolean
-        IsActive = false
-    },
+    local innerBorder = Instance.new("Frame")
+    innerBorder.Name = "InnerBorder"
+    innerBorder.BackgroundColor3 = COLORS.Black
+    innerBorder.BorderSizePixel = 0
+    innerBorder.Size = UDim2.new(1, -2, 1, -2)
+    innerBorder.Position = UDim2.new(0, 1, 0, 1)
+    innerBorder.Parent = self.MainFrame
     
-    -- Swing Prediction
-    Predictor = {
-        Samples = {},           -- Global damage samples
-        RockData = {},          -- Per-rock data
-        AverageDamage = 20,     -- Default value
-    }
-}
-
--- ===================== INISIALISASI FILTER =====================
-for _, zone in ipairs(DATA.Zones) do SYSTEMS.Filter.Zones[zone] = false end
-for _, rock in ipairs(DATA.Rocks) do SYSTEMS.Filter.Rocks[rock] = false end
-for _, ore in ipairs(DATA.Ores) do SYSTEMS.Filter.Ores[ore] = false end
-
--- ===================== FUNGSI UTAMA =====================
-
--- Fungsi untuk mendapatkan mining remote (lazy loading)
-local function getMiningRemote()
-    if not SYSTEMS.MiningRemote then
-        SYSTEMS.MiningRemote = ReplicatedStorage:WaitForChild("Shared")
-            :WaitForChild("Packages"):WaitForChild("Knit")
-            :WaitForChild("Services"):WaitForChild("ToolService")
-            :WaitForChild("RF"):WaitForChild("ToolActivated")
-    end
-    return SYSTEMS.MiningRemote
+    -- Header
+    self.Header = Instance.new("Frame")
+    self.Header.Name = "Header"
+    self.Header.BackgroundColor3 = COLORS.Black
+    self.Header.BorderSizePixel = 0
+    self.Header.Size = UDim2.new(1, 0, 0, 35)
+    
+    -- Header Title
+    self.Title = Instance.new("TextLabel")
+    self.Title.Name = "Title"
+    self.Title.Text = "⚒️ AUTO MINING v9.1"
+    self.Title.Font = FONTS.Gotham
+    self.Title.TextSize = 16
+    self.Title.TextColor3 = COLORS.Red
+    self.Title.BackgroundTransparency = 1
+    self.Title.Size = UDim2.new(0.6, 0, 1, 0)
+    self.Title.Position = UDim2.new(0.02, 0, 0, 0)
+    self.Title.TextXAlignment = Enum.TextXAlignment.Left
+    
+    -- Control Buttons
+    self.MinimizeBtn = Instance.new("TextButton")
+    self.MinimizeBtn.Name = "MinimizeBtn"
+    self.MinimizeBtn.Text = "─"
+    self.MinimizeBtn.Font = FONTS.Arial
+    self.MinimizeBtn.TextSize = 16
+    self.MinimizeBtn.TextColor3 = COLORS.White
+    self.MinimizeBtn.BackgroundColor3 = COLORS.DarkRed
+    self.MinimizeBtn.BorderSizePixel = 0
+    self.MinimizeBtn.Size = UDim2.new(0, 25, 0, 25)
+    self.MinimizeBtn.Position = UDim2.new(0.85, 0, 0.5, -12.5)
+    self.MinimizeBtn.AnchorPoint = Vector2.new(0, 0.5)
+    
+    self.CloseBtn = Instance.new("TextButton")
+    self.CloseBtn.Name = "CloseBtn"
+    self.CloseBtn.Text = "X"
+    self.CloseBtn.Font = FONTS.Arial
+    self.CloseBtn.TextSize = 14
+    self.CloseBtn.TextColor3 = COLORS.White
+    self.CloseBtn.BackgroundColor3 = COLORS.Red
+    self.CloseBtn.BorderSizePixel = 0
+    self.CloseBtn.Size = UDim2.new(0, 25, 0, 25)
+    self.CloseBtn.Position = UDim2.new(0.93, 0, 0.5, -12.5)
+    self.CloseBtn.AnchorPoint = Vector2.new(0, 0.5)
+    
+    -- Tab System
+    self.TabsContainer = Instance.new("Frame")
+    self.TabsContainer.Name = "TabsContainer"
+    self.TabsContainer.BackgroundColor3 = COLORS.Black
+    self.TabsContainer.BorderSizePixel = 0
+    self.TabsContainer.Size = UDim2.new(1, 0, 0, 30)
+    self.TabsContainer.Position = UDim2.new(0, 0, 0, 35)
+    
+    self.AutoMiningTabBtn = Instance.new("TextButton")
+    self.AutoMiningTabBtn.Name = "AutoMiningTabBtn"
+    self.AutoMiningTabBtn.Text = "🔨 Auto Mining"
+    self.AutoMiningTabBtn.Font = FONTS.Gotham
+    self.AutoMiningTabBtn.TextSize = 13
+    self.AutoMiningTabBtn.TextColor3 = COLORS.White
+    self.AutoMiningTabBtn.BackgroundColor3 = COLORS.Red
+    self.AutoMiningTabBtn.BorderSizePixel = 0
+    self.AutoMiningTabBtn.Size = UDim2.new(0.5, 0, 1, 0)
+    self.AutoMiningTabBtn.Position = UDim2.new(0, 0, 0, 0)
+    
+    self.SettingTabBtn = Instance.new("TextButton")
+    self.SettingTabBtn.Name = "SettingTabBtn"
+    self.SettingTabBtn.Text = "⚙️ Settings"
+    self.SettingTabBtn.Font = FONTS.Gotham
+    self.SettingTabBtn.TextSize = 13
+    self.SettingTabBtn.TextColor3 = COLORS.Gray
+    self.SettingTabBtn.BackgroundColor3 = COLORS.Black
+    self.SettingTabBtn.BorderSizePixel = 0
+    self.SettingTabBtn.Size = UDim2.new(0.5, 0, 1, 0)
+    self.SettingTabBtn.Position = UDim2.new(0.5, 0, 0, 0)
+    
+    -- Content Area
+    self.ContentContainer = Instance.new("Frame")
+    self.ContentContainer.Name = "ContentContainer"
+    self.ContentContainer.BackgroundTransparency = 1
+    self.ContentContainer.Size = UDim2.new(1, 0, 1, -65)
+    self.ContentContainer.Position = UDim2.new(0, 0, 0, 65)
+    self.ContentContainer.ClipsDescendants = true
+    
+    -- Create content frames
+    self:CreateAutoMiningTab()
+    self:CreateSettingsTab()
+    
+    -- Parent everything
+    self.Title.Parent = self.Header
+    self.MinimizeBtn.Parent = self.Header
+    self.CloseBtn.Parent = self.Header
+    self.Header.Parent = self.MainFrame
+    
+    self.AutoMiningTabBtn.Parent = self.TabsContainer
+    self.SettingTabBtn.Parent = self.TabsContainer
+    self.TabsContainer.Parent = self.MainFrame
+    
+    self.ContentContainer.Parent = self.MainFrame
+    self.MainFrame.Parent = self.ScreenGui
+    self.ScreenGui.Parent = localPlayer:WaitForChild("PlayerGui")
+    
+    -- Setup functionality
+    self:SetupFunctionality()
+    
+    self.Enabled = true
+    print("✅ GUI Created Successfully")
 end
 
--- Fungsi untuk update status filter
-local function updateFilterStatus()
-    local active = false
+function MiningGUI:CreateAutoMiningTab()
+    -- Auto Mining Tab
+    self.AutoMiningContent = Instance.new("Frame")
+    self.AutoMiningContent.Name = "AutoMiningContent"
+    self.AutoMiningContent.BackgroundTransparency = 1
+    self.AutoMiningContent.Size = UDim2.new(1, 0, 1, 0)
+    self.AutoMiningContent.Visible = true
     
-    -- Cek jika ada filter yang aktif
-    for _, enabled in pairs(SYSTEMS.Filter.Zones) do
-        if enabled then active = true; break end
-    end
+    -- On/Off Toggle
+    local toggleFrame = Instance.new("Frame")
+    toggleFrame.Name = "ToggleFrame"
+    toggleFrame.BackgroundColor3 = COLORS.Black
+    toggleFrame.BorderSizePixel = 0
+    toggleFrame.Size = UDim2.new(1, -20, 0, 50)
+    toggleFrame.Position = UDim2.new(0, 10, 0, 10)
     
-    if not active then
-        for _, enabled in pairs(SYSTEMS.Filter.Rocks) do
-            if enabled then active = true; break end
-        end
-    end
+    local toggleLabel = Instance.new("TextLabel")
+    toggleLabel.Name = "ToggleLabel"
+    toggleLabel.Text = "AUTO MINING"
+    toggleLabel.Font = FONTS.Arial
+    toggleLabel.TextSize = 14
+    toggleLabel.TextColor3 = COLORS.White
+    toggleLabel.BackgroundTransparency = 1
+    toggleLabel.Size = UDim2.new(0.6, 0, 1, 0)
+    toggleLabel.Position = UDim2.new(0, 10, 0, 0)
+    toggleLabel.TextXAlignment = Enum.TextXAlignment.Left
     
-    if not active then
-        for _, enabled in pairs(SYSTEMS.Filter.Ores) do
-            if enabled then active = true; break end
-        end
-    end
+    self.ToggleBtn = Instance.new("TextButton")
+    self.ToggleBtn.Name = "ToggleBtn"
+    self.ToggleBtn.Text = "OFF"
+    self.ToggleBtn.Font = FONTS.Gotham
+    self.ToggleBtn.TextSize = 13
+    self.ToggleBtn.TextColor3 = COLORS.White
+    self.ToggleBtn.BackgroundColor3 = Color3.fromRGB(100, 0, 0)
+    self.ToggleBtn.BorderSizePixel = 0
+    self.ToggleBtn.Size = UDim2.new(0, 70, 0, 30)
+    self.ToggleBtn.Position = UDim2.new(1, -80, 0.5, -15)
+    self.ToggleBtn.AnchorPoint = Vector2.new(1, 0.5)
     
-    SYSTEMS.Filter.IsActive = active
-    return active
+    -- Status display
+    self.StatusLabel = Instance.new("TextLabel")
+    self.StatusLabel.Name = "StatusLabel"
+    self.StatusLabel.Text = "Status: Stopped"
+    self.StatusLabel.Font = FONTS.Gotham
+    self.StatusLabel.TextSize = 12
+    self.StatusLabel.TextColor3 = COLORS.Gray
+    self.StatusLabel.BackgroundTransparency = 1
+    self.StatusLabel.Size = UDim2.new(1, -20, 0, 20)
+    self.StatusLabel.Position = UDim2.new(0, 10, 0, 65)
+    self.StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    
+    -- Scroll container for filters
+    local scrollFrame = Instance.new("ScrollingFrame")
+    scrollFrame.Name = "ScrollFrame"
+    scrollFrame.BackgroundTransparency = 1
+    scrollFrame.Size = UDim2.new(1, -20, 1, -100)
+    scrollFrame.Position = UDim2.new(0, 10, 0, 90)
+    scrollFrame.ScrollBarThickness = 6
+    scrollFrame.ScrollBarImageColor3 = COLORS.Red
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 600)
+    
+    -- Create filter sections
+    local yOffset = 0
+    
+    -- Zone Filter
+    local zoneFrame = self:CreateFilterSection("Zone Filter", AutoMiner.getDataLists().Zones, "Zones", yOffset)
+    zoneFrame.Parent = scrollFrame
+    yOffset = yOffset + 60 + (#AutoMiner.getDataLists().Zones * 25)
+    
+    -- Rock Filter
+    local rockFrame = self:CreateFilterSection("Rock Filter", AutoMiner.getDataLists().Rocks, "Rocks", yOffset)
+    rockFrame.Parent = scrollFrame
+    yOffset = yOffset + 60 + (#AutoMiner.getDataLists().Rocks * 25)
+    
+    -- Ore Filter
+    local oreFrame = self:CreateFilterSection("Ore Filter", AutoMiner.getDataLists().Ores, "Ores", yOffset)
+    oreFrame.Parent = scrollFrame
+    
+    -- Update canvas size
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, yOffset + 100)
+    
+    -- Parent everything
+    toggleLabel.Parent = toggleFrame
+    self.ToggleBtn.Parent = toggleFrame
+    toggleFrame.Parent = self.AutoMiningContent
+    self.StatusLabel.Parent = self.AutoMiningContent
+    scrollFrame.Parent = self.AutoMiningContent
+    self.AutoMiningContent.Parent = self.ContentContainer
 end
 
--- Fungsi untuk validasi apakah rock lolos filter
-local function rockPassesFilter(rockName, oreType)
-    if not SYSTEMS.Filter.IsActive then return true end
+function MiningGUI:CreateFilterSection(title, items, category, yPosition)
+    local section = Instance.new("Frame")
+    section.Name = category .. "Section"
+    section.BackgroundColor3 = COLORS.Black
+    section.BorderSizePixel = 0
+    section.Size = UDim2.new(1, 0, 0, 40 + (#items * 25))
+    section.Position = UDim2.new(0, 0, 0, yPosition)
     
-    -- Cek rock filter
-    if SYSTEMS.Filter.Rocks[rockName] then
-        return true
-    end
+    -- Section header
+    local header = Instance.new("TextButton")
+    header.Name = "Header"
+    header.Text = "▶ " .. title
+    header.Font = FONTS.Gotham
+    header.TextSize = 13
+    header.TextColor3 = COLORS.White
+    header.BackgroundColor3 = COLORS.DarkRed
+    header.BorderSizePixel = 0
+    header.Size = UDim2.new(1, 0, 0, 30)
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.PaddingLeft = UDim.new(0, 10)
     
-    -- Cek ore filter
-    if oreType and SYSTEMS.Filter.Ores[oreType] then
-        return true
-    end
+    -- Items container (visible by default for Delta compatibility)
+    local itemsFrame = Instance.new("Frame")
+    itemsFrame.Name = "Items"
+    itemsFrame.BackgroundColor3 = COLORS.DarkGray
+    itemsFrame.BorderSizePixel = 0
+    itemsFrame.Size = UDim2.new(1, 0, 0, #items * 25)
+    itemsFrame.Position = UDim2.new(0, 0, 0, 30)
     
-    return false
-end
-
--- Fungsi untuk validasi apakah zone lolos filter
-local function zonePassesFilter(zoneName)
-    if not SYSTEMS.Filter.IsActive then return true end
-    return SYSTEMS.Filter.Zones[zoneName] == true
-end
-
--- ===================== SCANNING SYSTEM =====================
--- Berdasarkan struktur: Workspace.Rocks.Zone.SpawnLocation.Rock
-local function scanWorkspace()
-    local startTime = tick()
-    local rocksFolder = Workspace:FindFirstChild("Rocks")
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 2)
+    layout.Parent = itemsFrame
     
-    if not rocksFolder then
-        warn("Folder 'Rocks' tidak ditemukan di Workspace!")
-        return
-    end
-    
-    -- Reset cache
-    local newCache = {
-        Zones = {},
-        Rocks = {},
-        ZoneRocks = {},
-        LastUpdate = tick()
-    }
-    
-    -- Iterasi melalui semua zone
-    for _, zone in ipairs(rocksFolder:GetChildren()) do
-        local zoneName = zone.Name
+    -- Create checkboxes
+    for i, item in ipairs(items) do
+        local checkboxFrame = Instance.new("Frame")
+        checkboxFrame.Name = item .. "Checkbox"
+        checkboxFrame.BackgroundTransparency = 1
+        checkboxFrame.Size = UDim2.new(1, -10, 0, 23)
+        checkboxFrame.Position = UDim2.new(0, 5, 0, (i-1)*25)
         
-        -- Validasi zone
-        if not ZONES_LOOKUP[zoneName] then
-            continue  -- Zone tidak valid, skip
-        end
+        local checkbox = Instance.new("TextButton")
+        checkbox.Name = "Checkbox"
+        checkbox.Text = ""
+        checkbox.BackgroundColor3 = COLORS.Black
+        checkbox.BorderSizePixel = 1
+        checkbox.BorderColor3 = COLORS.Red
+        checkbox.Size = UDim2.new(0, 18, 0, 18)
+        checkbox.Position = UDim2.new(0, 5, 0.5, -9)
+        checkbox.AnchorPoint = Vector2.new(0, 0.5)
         
-        -- Filter zone jika aktif
-        if SYSTEMS.Filter.IsActive and not zonePassesFilter(zoneName) then
-            continue
-        end
+        local checkmark = Instance.new("TextLabel")
+        checkmark.Name = "Checkmark"
+        checkmark.Text = "✓"
+        checkmark.Font = FONTS.Arial
+        checkmark.TextSize = 14
+        checkmark.TextColor3 = COLORS.Red
+        checkmark.BackgroundTransparency = 1
+        checkmark.Size = UDim2.new(1, 0, 1, 0)
+        checkmark.Visible = false
         
-        -- Zone lolos semua filter
-        newCache.Zones[zoneName] = zone
-        newCache.ZoneRocks[zoneName] = {}
+        local label = Instance.new("TextLabel")
+        label.Name = "Label"
+        label.Text = item
+        label.Font = FONTS.Gotham
+        label.TextSize = 12
+        label.TextColor3 = COLORS.Gray
+        label.BackgroundTransparency = 1
+        label.Size = UDim2.new(1, -30, 1, 0)
+        label.Position = UDim2.new(0, 30, 0, 0)
+        label.TextXAlignment = Enum.TextXAlignment.Left
         
-        -- Cari SpawnLocation (Part) di dalam Zone
-        for _, spawnLocation in ipairs(zone:GetChildren()) do
-            -- SpawnLocation harus Part
-            if not spawnLocation:IsA("BasePart") then
-                continue
-            end
+        -- Checkbox click event
+        checkbox.MouseButton1Click:Connect(function()
+            local currentState = not checkmark.Visible
+            checkmark.Visible = currentState
             
-            -- Cek pattern nama SpawnLocation
-            if not (string.find(spawnLocation.Name:lower(), "spawn") or 
-                    spawnLocation.Name == "SpawnLocation") then
-                continue
-            end
+            -- Update filter
+            AutoMiner.setFilter(category, item, currentState)
             
-            -- Iterasi melalui semua Rock (Model) di SpawnLocation
-            for _, rock in ipairs(spawnLocation:GetChildren()) do
-                local rockName = rock.Name
-                
-                -- Validasi rock
-                if not ROCKS_LOOKUP[rockName] or not rock:IsA("Model") then
-                    continue
-                end
-                
-                -- Validasi health dan ownership
-                local health = rock:GetAttribute("Health")
-                local owner = rock:GetAttribute("LastHitPlayer")
-                
-                if not health or health <= 0 then
-                    continue  -- Rock sudah hancur
-                end
-                
-                if owner and owner ~= USER_ID then
-                    continue  -- Dimiliki pemain lain
-                end
-                
-                -- Dapatkan ore type dari attribute rock
-                local oreType = rock:GetAttribute("Ore")
-                
-                -- Filter rock
-                if not rockPassesFilter(rockName, oreType) then
-                    continue
-                end
-                
-                -- Rock valid, tambahkan ke cache
-                local rockData = {
-                    Instance = rock,
-                    Zone = zoneName,
-                    Name = rockName,
-                    OreType = oreType,
-                    Health = health,
-                    Position = rock:GetPivot().Position
-                }
-                
-                table.insert(newCache.ZoneRocks[zoneName], rockData)
-                newCache.Rocks[rockName] = rockData
+            -- Visual feedback
+            if currentState then
+                checkbox.BackgroundColor3 = Color3.fromRGB(50, 0, 0)
+            else
+                checkbox.BackgroundColor3 = COLORS.Black
             end
-        end
-    end
-    
-    -- Update cache system
-    SYSTEMS.Cache = newCache
-    
-    -- Logging
-    local scanTime = tick() - startTime
-    local rockCount = 0
-    for _, rocks in pairs(SYSTEMS.Cache.ZoneRocks) do
-        rockCount = rockCount + #rocks
-    end
-    
-    print(string.format("✅ Scan selesai: %.3f detik", scanTime))
-    print(string.format("📁 Zones: %d", countTable(SYSTEMS.Cache.Zones)))
-    print(string.format("🪨 Rocks: %d", rockCount))
-    
-    return true
-end
-
--- ===================== SWING PREDICTION SYSTEM =====================
--- Sistem prediksi untuk mengetahui swing terakhir
-
-local function updateSwingPrediction(rock, newHealth)
-    if not rock then return end
-    
-    local rockKey = tostring(rock)
-    local oldHealth = SYSTEMS.Predictor.RockData[rockKey] and 
-                      SYSTEMS.Predictor.RockData[rockKey].LastHealth
-    
-    if oldHealth and oldHealth > 0 then
-        local damage = oldHealth - newHealth
-        
-        if damage > 0 then
-            -- Update global samples
-            table.insert(SYSTEMS.Predictor.Samples, damage)
-            if #SYSTEMS.Predictor.Samples > CONFIG.SwingSampleSize then
-                table.remove(SYSTEMS.Predictor.Samples, 1)
-            end
-            
-            -- Update average damage
-            local total = 0
-            for _, dmg in ipairs(SYSTEMS.Predictor.Samples) do
-                total = total + dmg
-            end
-            SYSTEMS.Predictor.AverageDamage = math.floor(total / #SYSTEMS.Predictor.Samples)
-            
-            -- Update rock-specific data
-            if not SYSTEMS.Predictor.RockData[rockKey] then
-                SYSTEMS.Predictor.RockData[rockKey] = {
-                    DamageHistory = {},
-                    LastHealth = newHealth
-                }
-            end
-            
-            local rockData = SYSTEMS.Predictor.RockData[rockKey]
-            table.insert(rockData.DamageHistory, damage)
-            if #rockData.DamageHistory > 5 then
-                table.remove(rockData.DamageHistory, 1)
-            end
-        end
-    end
-    
-    -- Update last health
-    if SYSTEMS.Predictor.RockData[rockKey] then
-        SYSTEMS.Predictor.RockData[rockKey].LastHealth = newHealth
-    end
-end
-
-local function predictRemainingSwings(rock)
-    if not rock then return 0 end
-    
-    local currentHealth = rock:GetAttribute("Health") or 0
-    local rockKey = tostring(rock)
-    local rockData = SYSTEMS.Predictor.RockData[rockKey]
-    
-    -- Jika ada data spesifik rock, gunakan itu
-    if rockData and #rockData.DamageHistory > 0 then
-        local total = 0
-        for _, dmg in ipairs(rockData.DamageHistory) do
-            total = total + dmg
-        end
-        local rockAvg = math.floor(total / #rockData.DamageHistory)
-        
-        -- Weighted average: 70% rock-specific, 30% global
-        local weightedAvg = math.floor((rockAvg * 0.7) + (SYSTEMS.Predictor.AverageDamage * 0.3))
-        
-        if weightedAvg > 0 then
-            return math.ceil(currentHealth / weightedAvg)
-        end
-    end
-    
-    -- Fallback ke global average
-    if SYSTEMS.Predictor.AverageDamage > 0 then
-        return math.ceil(currentHealth / SYSTEMS.Predictor.AverageDamage)
-    end
-    
-    return math.ceil(currentHealth / 20)  -- Default fallback
-end
-
--- ===================== MOVEMENT SYSTEM =====================
--- Sistem pergerakan dengan NoClip dan Anti-Gravity
-
-local function prepareCharacter(character)
-    if not character then return false end
-    
-    -- Enable NoClip
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = false
-        end
-    end
-    
-    -- Enable Anti-Gravity
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if humanoid then
-        humanoid.PlatformStand = true
-    end
-    
-    return true
-end
-
-local function restoreCharacter(character)
-    if not character then return false end
-    
-    -- Disable NoClip
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = true
-        end
-    end
-    
-    -- Disable Anti-Gravity
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if humanoid then
-        humanoid.PlatformStand = false
-    end
-    
-    return true
-end
-
-local function moveToRock(character, targetPosition)
-    if not character then return false end
-    
-    local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
-    if not humanoidRootPart then return false end
-    
-    -- Hitung posisi target dengan Y offset
-    local targetPos = Vector3.new(
-        targetPosition.X,
-        targetPosition.Y + CONFIG.YOffset,
-        targetPosition.Z
-    )
-    
-    -- Hitung jarak dan durasi
-    local distance = (humanoidRootPart.Position - targetPos).Magnitude
-    local actualSpeed = CONFIG.TweenSpeed * 2  -- Konversi: 20-80 → 40-160 studs/detik
-    local duration = distance / actualSpeed
-    
-    -- Buat tween
-    local tween = TweenService:Create(
-        humanoidRootPart,
-        TweenInfo.new(duration, Enum.EasingStyle.Linear),
-        {Position = targetPos}
-    )
-    
-    -- Persiapan karakter
-    prepareCharacter(character)
-    
-    -- Jalankan tween
-    tween:Play()
-    
-    -- Tunggu tween selesai (non-blocking)
-    local startTime = tick()
-    while tick() - startTime < duration do
-        if not SYSTEMS.MiningActive then break end
-        RunService.Heartbeat:Wait()
-    end
-    
-    -- Batalkan jika masih berjalan
-    if tween.PlaybackState == Enum.PlaybackState.Playing then
-        tween:Cancel()
-    end
-    
-    -- Hadapkan karakter ke target
-    local direction = (targetPosition - humanoidRootPart.Position).Unit
-    humanoidRootPart.CFrame = CFrame.lookAt(
-        humanoidRootPart.Position,
-        humanoidRootPart.Position + Vector3.new(direction.X, 0, direction.Z)
-    )
-    
-    return true
-end
-
--- ===================== MINING PROCESS =====================
--- Proses mining untuk satu rock
-
-local function mineRock(rockData)
-    if not rockData or not SYSTEMS.MiningActive then return false end
-    
-    local character = localPlayer.Character
-    if not character then return false end
-    
-    local rock = rockData.Instance
-    local rockName = rockData.Name
-    local oreType = rockData.OreType
-    local zoneName = rockData.Zone
-    
-    print(string.format("🚀 Menuju: %s (Zone: %s, Ore: %s)", 
-        rockName, zoneName, oreType or "Unknown"))
-    
-    -- Bergerak ke rock
-    if not moveToRock(character, rockData.Position) then
-        print("❌ Gagal bergerak ke rock")
-        return false
-    end
-    
-    print("✅ Sampai di posisi rock")
-    
-    -- Tunggu stabilisasi
-    wait(0.5)
-    
-    -- Validasi ulang rock sebelum mining
-    local health = rock:GetAttribute("Health")
-    local owner = rock:GetAttribute("LastHitPlayer")
-    
-    if not health or health <= 0 then
-        print("❌ Rock sudah hancur")
-        return false
-    end
-    
-    if owner and owner ~= USER_ID then
-        print("❌ Rock dimiliki pemain lain")
-        return false
-    end
-    
-    SYSTEMS.CurrentRock = rock
-    
-    -- Proses mining
-    local swingCount = 0
-    local oreSpawned = false
-    local maxSwings = CONFIG.MaxSwingsPerRock
-    
-    while SYSTEMS.MiningActive and swingCount < maxSwings do
-        -- Cek validitas rock
-        if not rock or not rock.Parent then
-            print("❌ Rock tidak ditemukan")
-            break
-        end
-        
-        local currentHealth = rock:GetAttribute("Health")
-        if not currentHealth or currentHealth <= 0 then
-            print(string.format("✅ Rock hancur: %s", rockName))
-            
-            if oreSpawned then
-                print(string.format("💰 Ore dikumpulkan: %s", oreType or "Unknown"))
-            end
-            
-            break
-        end
-        
-        -- Cek ownership
-        local currentOwner = rock:GetAttribute("LastHitPlayer")
-        if currentOwner and currentOwner ~= USER_ID then
-            print("❌ Kepemilikan berubah")
-            break
-        end
-        
-        -- Cek jika ore muncul
-        if not oreSpawned and currentHealth < CONFIG.OreThreshold then
-            oreSpawned = true
-            print(string.format("💎 Ore muncul: %s (Health: %d)", 
-                oreType or "Unknown", currentHealth))
-        end
-        
-        -- Prediksi swing tersisa
-        local remainingSwings = predictRemainingSwings(rock)
-        
-        -- Persiapan target berikutnya jika sudah dekat akhir
-        if remainingSwings <= 3 and not SYSTEMS.NextRock then
-            print(string.format("🎯 Mempersiapkan target berikutnya (%d swing tersisa)", remainingSwings))
-            
-            -- Cari target berikutnya secara async
-            task.spawn(function()
-                SYSTEMS.NextRock = findNextRock(rock)
-            end)
-        end
-        
-        -- Log prediksi
-        if remainingSwings <= 5 then
-            print(string.format("⏳ %s: %d HP (~%d swing tersisa)", 
-                rockName, currentHealth, remainingSwings))
-        end
-        
-        -- Eksekusi mining action
-        local success = pcall(function()
-            getMiningRemote():InvokeServer("Pickaxe")
         end)
         
-        if success then
-            swingCount = swingCount + 1
-            
-            -- Update swing prediction
-            local newHealth = rock:GetAttribute("Health")
-            updateSwingPrediction(rock, newHealth)
-            
-            -- Log swing terakhir yang diprediksi
-            if remainingSwings <= 2 then
-                print("⚡ SWING TERAKHIR DIPREDIKSI - Siap beralih")
+        -- Initialize state
+        task.spawn(function()
+            local initialState = AutoMiner.getFilter(category, item)
+            checkmark.Visible = initialState
+            if initialState then
+                checkbox.BackgroundColor3 = Color3.fromRGB(50, 0, 0)
             end
+        end)
+        
+        checkboxFrame.Parent = itemsFrame
+        checkbox.Parent = checkboxFrame
+        checkmark.Parent = checkbox
+        label.Parent = checkboxFrame
+    end
+    
+    -- Simple toggle (show/hide)
+    header.MouseButton1Click:Connect(function()
+        if itemsFrame.Visible then
+            itemsFrame.Visible = false
+            section.Size = UDim2.new(1, 0, 0, 30)
+            header.Text = "▶ " .. title
         else
-            print("❌ Mining action gagal")
-        end
-        
-        -- Tunggu interval mining
-        wait(CONFIG.MiningInterval)
-    end
-    
-    -- Reset state
-    if SYSTEMS.CurrentRock == rock then
-        SYSTEMS.CurrentRock = nil
-    end
-    
-    -- Restore karakter
-    restoreCharacter(character)
-    
-    return swingCount > 0
-end
-
--- ===================== TARGET SELECTION =====================
--- Sistem pemilihan target berikutnya
-
-local function findNextRock(currentRock)
-    local cache = SYSTEMS.Cache
-    
-    for zoneName, rocks in pairs(cache.ZoneRocks) do
-        for _, rockData in ipairs(rocks) do
-            local rock = rockData.Instance
-            
-            -- Skip rock yang sedang ditambang
-            if rock == currentRock then
-                continue
-            end
-            
-            -- Validasi rock
-            if not rock or not rock.Parent then
-                continue
-            end
-            
-            local health = rock:GetAttribute("Health")
-            local owner = rock:GetAttribute("LastHitPlayer")
-            
-            if not health or health <= 0 then
-                continue
-            end
-            
-            if owner and owner ~= USER_ID then
-                continue
-            end
-            
-            -- Rock valid, return
-            return rockData
-        end
-    end
-    
-    return nil
-end
-
--- ===================== MAIN MINING LOOP =====================
-
-local function miningLoop()
-    if not SYSTEMS.MiningActive then return end
-    
-    while SYSTEMS.MiningActive do
-        local character = localPlayer.Character
-        if not character then
-            wait(2)
-            continue
-        end
-        
-        -- Pilih target
-        local targetRock = nil
-        
-        if SYSTEMS.NextRock then
-            -- Gunakan target yang sudah dipersiapkan
-            targetRock = SYSTEMS.NextRock
-            SYSTEMS.NextRock = nil
-            print(string.format("🎯 Menggunakan target yang sudah dipersiapkan: %s", 
-                targetRock.Name))
-        else
-            -- Cari target baru
-            targetRock = findNextRock(SYSTEMS.CurrentRock)
-        end
-        
-        -- Proses mining
-        if targetRock then
-            mineRock(targetRock)
-        else
-            print("⏳ Tidak ada rock yang tersedia, rescan...")
-            wait(2)
-        end
-        
-        -- Periodic rescan
-        if tick() - SYSTEMS.Cache.LastUpdate > CONFIG.ScanInterval then
-            task.spawn(scanWorkspace)
-        end
-    end
-    
-    -- Restore character state saat berhenti
-    local character = localPlayer.Character
-    if character then
-        restoreCharacter(character)
-    end
-end
-
--- ===================== UTILITY FUNCTIONS =====================
-
-local function countTable(tbl, value)
-    if not tbl then return 0 end
-    
-    local count = 0
-    if value ~= nil then
-        for _, v in pairs(tbl) do
-            if v == value then
-                count = count + 1
-            end
-        end
-    else
-        for _ in pairs(tbl) do
-            count = count + 1
-        end
-    end
-    
-    return count
-end
-
--- ===================== PUBLIC API =====================
--- Interface untuk GUI
-
-local AutoMiner = {}
-
--- 1. SAKLAR AUTO MINING
-function AutoMiner.start()
-    if SYSTEMS.MiningActive then
-        warn("⚠️ Auto mining sudah aktif!")
-        return
-    end
-    
-    SYSTEMS.MiningActive = true
-    
-    -- Setup mining remote
-    getMiningRemote()
-    
-    -- Initial scan
-    scanWorkspace()
-    
-    -- Start mining loop
-    SYSTEMS.Connection = RunService.Heartbeat:Connect(function()
-        if SYSTEMS.MiningActive then
-            miningLoop()
+            itemsFrame.Visible = true
+            section.Size = UDim2.new(1, 0, 0, 40 + (#items * 25))
+            header.Text = "▼ " .. title
         end
     end)
     
-    print("🚀 Auto Mining System Started")
-    print(string.format("⚙️ Tween Speed: %d (Actual: %d studs/sec)", 
-        CONFIG.TweenSpeed, CONFIG.TweenSpeed * 2))
-    print(string.format("⚙️ Y Offset: %d studs", CONFIG.YOffset))
-    print(string.format("⚙️ Mining Interval: %.2f sec", CONFIG.MiningInterval))
+    header.Parent = section
+    itemsFrame.Parent = section
+    
+    return section
 end
 
-function AutoMiner.stop()
-    SYSTEMS.MiningActive = false
-    SYSTEMS.CurrentRock = nil
-    SYSTEMS.NextRock = nil
+function MiningGUI:CreateSettingsTab()
+    -- Settings Tab
+    self.SettingContent = Instance.new("Frame")
+    self.SettingContent.Name = "SettingContent"
+    self.SettingContent.BackgroundTransparency = 1
+    self.SettingContent.Size = UDim2.new(1, 0, 1, 0)
+    self.SettingContent.Visible = false
     
-    if SYSTEMS.Connection then
-        SYSTEMS.Connection:Disconnect()
-        SYSTEMS.Connection = nil
+    -- Tween Speed Slider
+    local tweenFrame = Instance.new("Frame")
+    tweenFrame.Name = "TweenFrame"
+    tweenFrame.BackgroundColor3 = COLORS.Black
+    tweenFrame.BorderSizePixel = 0
+    tweenFrame.Size = UDim2.new(1, -20, 0, 60)
+    tweenFrame.Position = UDim2.new(0, 10, 0, 20)
+    
+    self.TweenSpeedLabel = Instance.new("TextLabel")
+    self.TweenSpeedLabel.Name = "TweenSpeedLabel"
+    self.TweenSpeedLabel.Text = "Tween Speed: 50"
+    self.TweenSpeedLabel.Font = FONTS.Gotham
+    self.TweenSpeedLabel.TextSize = 14
+    self.TweenSpeedLabel.TextColor3 = COLORS.White
+    self.TweenSpeedLabel.BackgroundTransparency = 1
+    self.TweenSpeedLabel.Size = UDim2.new(1, -10, 0, 20)
+    self.TweenSpeedLabel.Position = UDim2.new(0, 5, 0, 5)
+    self.TweenSpeedLabel.TextXAlignment = Enum.TextXAlignment.Left
+    
+    self.TweenSpeedSlider = Instance.new("Frame")
+    self.TweenSpeedSlider.Name = "TweenSpeedSlider"
+    self.TweenSpeedSlider.BackgroundColor3 = COLORS.DarkGray
+    self.TweenSpeedSlider.BorderSizePixel = 0
+    self.TweenSpeedSlider.Size = UDim2.new(1, -10, 0, 20)
+    self.TweenSpeedSlider.Position = UDim2.new(0, 5, 0, 30)
+    
+    self.TweenSpeedFill = Instance.new("Frame")
+    self.TweenSpeedFill.Name = "Fill"
+    self.TweenSpeedFill.BackgroundColor3 = COLORS.Red
+    self.TweenSpeedFill.BorderSizePixel = 0
+    self.TweenSpeedFill.Size = UDim2.new(0.5, 0, 1, 0)
+    
+    self.TweenSpeedButton = Instance.new("TextButton")
+    self.TweenSpeedButton.Name = "Button"
+    self.TweenSpeedButton.Text = ""
+    self.TweenSpeedButton.BackgroundColor3 = COLORS.White
+    self.TweenSpeedButton.BorderSizePixel = 0
+    self.TweenSpeedButton.Size = UDim2.new(0, 24, 0, 24)
+    self.TweenSpeedButton.Position = UDim2.new(0.5, -12, 0.5, -12)
+    self.TweenSpeedButton.AnchorPoint = Vector2.new(0, 0.5)
+    
+    -- Y Offset Slider
+    local yOffsetFrame = Instance.new("Frame")
+    yOffsetFrame.Name = "YOffsetFrame"
+    yOffsetFrame.BackgroundColor3 = COLORS.Black
+    yOffsetFrame.BorderSizePixel = 0
+    yOffsetFrame.Size = UDim2.new(1, -20, 0, 60)
+    yOffsetFrame.Position = UDim2.new(0, 10, 0, 100)
+    
+    self.YOffsetLabel = Instance.new("TextLabel")
+    self.YOffsetLabel.Name = "YOffsetLabel"
+    self.YOffsetLabel.Text = "Y Offset: -6 studs"
+    self.YOffsetLabel.Font = FONTS.Gotham
+    self.YOffsetLabel.TextSize = 14
+    self.YOffsetLabel.TextColor3 = COLORS.White
+    self.YOffsetLabel.BackgroundTransparency = 1
+    self.YOffsetLabel.Size = UDim2.new(1, -10, 0, 20)
+    self.YOffsetLabel.Position = UDim2.new(0, 5, 0, 5)
+    self.YOffsetLabel.TextXAlignment = Enum.TextXAlignment.Left
+    
+    self.YOffsetSlider = Instance.new("Frame")
+    self.YOffsetSlider.Name = "YOffsetSlider"
+    self.YOffsetSlider.BackgroundColor3 = COLORS.DarkGray
+    self.YOffsetSlider.BorderSizePixel = 0
+    self.YOffsetSlider.Size = UDim2.new(1, -10, 0, 20)
+    self.YOffsetSlider.Position = UDim2.new(0, 5, 0, 30)
+    
+    self.YOffsetFill = Instance.new("Frame")
+    self.YOffsetFill.Name = "Fill"
+    self.YOffsetFill.BackgroundColor3 = COLORS.Red
+    self.YOffsetFill.BorderSizePixel = 0
+    self.YOffsetFill.Size = UDim2.new(0.5, 0, 1, 0)
+    
+    self.YOffsetButton = Instance.new("TextButton")
+    self.YOffsetButton.Name = "Button"
+    self.YOffsetButton.Text = ""
+    self.YOffsetButton.BackgroundColor3 = COLORS.White
+    self.YOffsetButton.BorderSizePixel = 0
+    self.YOffsetButton.Size = UDim2.new(0, 24, 0, 24)
+    self.YOffsetButton.Position = UDim2.new(0.5, -12, 0.5, -12)
+    self.YOffsetButton.AnchorPoint = Vector2.new(0, 0.5)
+    
+    -- Stats Display
+    local statsFrame = Instance.new("Frame")
+    statsFrame.Name = "StatsFrame"
+    statsFrame.BackgroundColor3 = COLORS.Black
+    statsFrame.BorderSizePixel = 0
+    statsFrame.Size = UDim2.new(1, -20, 0, 150)
+    statsFrame.Position = UDim2.new(0, 10, 0, 180)
+    
+    local statsTitle = Instance.new("TextLabel")
+    statsTitle.Name = "StatsTitle"
+    statsTitle.Text = "📊 SYSTEM STATS"
+    statsTitle.Font = FONTS.Arial
+    statsTitle.TextSize = 14
+    statsTitle.TextColor3 = COLORS.Red
+    statsTitle.BackgroundTransparency = 1
+    statsTitle.Size = UDim2.new(1, -10, 0, 25)
+    statsTitle.Position = UDim2.new(0, 5, 0, 5)
+    statsTitle.TextXAlignment = Enum.TextXAlignment.Left
+    
+    self.StatsText = Instance.new("TextLabel")
+    self.StatsText.Name = "StatsText"
+    self.StatsText.Text = "Loading stats..."
+    self.StatsText.Font = FONTS.Gotham
+    self.StatsText.TextSize = 12
+    self.StatsText.TextColor3 = COLORS.Gray
+    self.StatsText.BackgroundTransparency = 1
+    self.StatsText.Size = UDim2.new(1, -10, 1, -30)
+    self.StatsText.Position = UDim2.new(0, 5, 0, 30)
+    self.StatsText.TextXAlignment = Enum.TextXAlignment.Left
+    self.StatsText.TextYAlignment = Enum.TextYAlignment.Top
+    self.StatsText.TextWrapped = true
+    
+    -- Parent slider elements
+    self.TweenSpeedFill.Parent = self.TweenSpeedSlider
+    self.TweenSpeedButton.Parent = self.TweenSpeedSlider
+    self.TweenSpeedLabel.Parent = tweenFrame
+    self.TweenSpeedSlider.Parent = tweenFrame
+    tweenFrame.Parent = self.SettingContent
+    
+    self.YOffsetFill.Parent = self.YOffsetSlider
+    self.YOffsetButton.Parent = self.YOffsetSlider
+    self.YOffsetLabel.Parent = yOffsetFrame
+    self.YOffsetSlider.Parent = yOffsetFrame
+    yOffsetFrame.Parent = self.SettingContent
+    
+    statsTitle.Parent = statsFrame
+    self.StatsText.Parent = statsFrame
+    statsFrame.Parent = self.SettingContent
+    
+    self.SettingContent.Parent = self.ContentContainer
+    
+    -- Setup sliders
+    self:SetupSliders()
+end
+
+function MiningGUI:SetupSliders()
+    -- Tween Speed Slider (20-80)
+    self:CreateSlider(
+        self.TweenSpeedSlider,
+        self.TweenSpeedFill,
+        self.TweenSpeedButton,
+        self.TweenSpeedLabel,
+        20, 80, 50,
+        function(value)
+            local intValue = math.floor(value)
+            self.TweenSpeedLabel.Text = "Tween Speed: " .. intValue
+            AutoMiner.setTweenSpeed(intValue)
+        end
+    )
+    
+    -- Y Offset Slider (-7 to 7)
+    self:CreateSlider(
+        self.YOffsetSlider,
+        self.YOffsetFill,
+        self.YOffsetButton,
+        self.YOffsetLabel,
+        -7, 7, -6,
+        function(value)
+            local intValue = math.floor(value)
+            self.YOffsetLabel.Text = "Y Offset: " .. intValue .. " studs"
+            AutoMiner.setYOffset(intValue)
+        end
+    )
+end
+
+function MiningGUI:CreateSlider(sliderFrame, fillFrame, button, label, minValue, maxValue, currentValue, callback)
+    local isDragging = false
+    
+    local function updateValue(value)
+        local normalized = (value - minValue) / (maxValue - minValue)
+        normalized = math.clamp(normalized, 0, 1)
+        
+        fillFrame.Size = UDim2.new(normalized, 0, 1, 0)
+        button.Position = UDim2.new(normalized, -12, 0.5, -12)
+        
+        if callback then
+            callback(value)
+        end
     end
     
-    -- Restore character
-    local character = localPlayer.Character
-    if character then
-        restoreCharacter(character)
+    -- Initialize
+    updateValue(currentValue)
+    
+    -- Mouse events
+    button.MouseButton1Down:Connect(function()
+        isDragging = true
+    end)
+    
+    sliderFrame.MouseButton1Down:Connect(function(x, y)
+        isDragging = true
+        local sliderPos = sliderFrame.AbsolutePosition
+        local sliderSize = sliderFrame.AbsoluteSize
+        local normalized = (x - sliderPos.X) / sliderSize.X
+        normalized = math.clamp(normalized, 0, 1)
+        local value = minValue + (maxValue - minValue) * normalized
+        updateValue(value)
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if isDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local sliderPos = sliderFrame.AbsolutePosition
+            local sliderSize = sliderFrame.AbsoluteSize
+            local normalized = (input.Position.X - sliderPos.X) / sliderSize.X
+            normalized = math.clamp(normalized, 0, 1)
+            local value = minValue + (maxValue - minValue) * normalized
+            updateValue(value)
+        end
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            isDragging = false
+        end
+    end)
+end
+
+function MiningGUI:UpdateStatus()
+    if not self.Enabled then return end
+    
+    local stats = AutoMiner.getStats()
+    local status = stats.miningActive and "Running" or "Stopped"
+    local color = stats.miningActive and COLORS.Red or Color3.fromRGB(100, 0, 0)
+    
+    self.StatusLabel.Text = "Status: " .. status
+    self.ToggleBtn.Text = stats.miningActive and "ON" or "OFF"
+    self.ToggleBtn.BackgroundColor3 = color
+    
+    -- Update stats text
+    local statsStr = string.format(
+        "Mining: %s\n" ..
+        "Current Rock: %s\n" ..
+        "Next Rock: %s\n" ..
+        "Tween Speed: %d\n" ..
+        "Y Offset: %d studs\n" ..
+        "Zones: %d\n" ..
+        "Rocks: %d\n" ..
+        "Filter Active: %s\n" ..
+        "Avg Damage: %d",
+        tostring(stats.miningActive),
+        stats.currentRock,
+        stats.nextRock,
+        stats.tweenSpeed,
+        stats.yOffset,
+        stats.zones,
+        stats.rocks,
+        tostring(stats.filterActive),
+        stats.avgDamage or 20
+    )
+    
+    self.StatsText.Text = statsStr
+end
+
+function MiningGUI:SetupFunctionality()
+    -- Tab switching
+    self.AutoMiningTabBtn.MouseButton1Click:Connect(function()
+        self.AutoMiningContent.Visible = true
+        self.SettingContent.Visible = false
+        self.AutoMiningTabBtn.BackgroundColor3 = COLORS.Red
+        self.AutoMiningTabBtn.TextColor3 = COLORS.White
+        self.SettingTabBtn.BackgroundColor3 = COLORS.Black
+        self.SettingTabBtn.TextColor3 = COLORS.Gray
+    end)
+    
+    self.SettingTabBtn.MouseButton1Click:Connect(function()
+        self.AutoMiningContent.Visible = false
+        self.SettingContent.Visible = true
+        self.SettingTabBtn.BackgroundColor3 = COLORS.Red
+        self.SettingTabBtn.TextColor3 = COLORS.White
+        self.AutoMiningTabBtn.BackgroundColor3 = COLORS.Black
+        self.AutoMiningTabBtn.TextColor3 = COLORS.Gray
+    end)
+    
+    -- Toggle mining
+    self.ToggleBtn.MouseButton1Click:Connect(function()
+        if AutoMiner.isActive() then
+            AutoMiner.stop()
+        else
+            AutoMiner.start()
+        end
+        self:UpdateStatus()
+    end)
+    
+    -- Minimize
+    local originalHeight = self.MainFrame.Size.Y.Offset
+    self.MinimizeBtn.MouseButton1Click:Connect(function()
+        self.Minimized = not self.Minimized
+        
+        if self.Minimized then
+            self.MainFrame.Size = UDim2.new(0, 400, 0, 35)
+            self.ContentContainer.Visible = false
+            self.TabsContainer.Visible = false
+            self.MinimizeBtn.Text = "□"
+        else
+            self.MainFrame.Size = UDim2.new(0, 400, 0, originalHeight)
+            self.ContentContainer.Visible = true
+            self.TabsContainer.Visible = true
+            self.MinimizeBtn.Text = "─"
+        end
+    end)
+    
+    -- Close
+    self.CloseBtn.MouseButton1Click:Connect(function()
+        if AutoMiner.isActive() then
+            AutoMiner.stop()
+        end
+        
+        -- Cleanup
+        if self.ScreenGui then
+            self.ScreenGui:Destroy()
+        end
+        
+        self.Enabled = false
+        
+        -- Restore character
+        local character = localPlayer.Character
+        if character then
+            for _, part in ipairs(character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+            
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                humanoid.PlatformStand = false
+            end
+        end
+        
+        print("GUI Closed - All systems stopped")
+    end)
+    
+    -- Dragging
+    self.Header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            self.Dragging = true
+            self.DragStart = input.Position
+            self.DragStartPosition = self.MainFrame.Position
+        end
+    end)
+    
+    self.Header.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement and self.Dragging then
+            local delta = input.Position - self.DragStart
+            self.MainFrame.Position = UDim2.new(
+                self.DragStartPosition.X.Scale,
+                self.DragStartPosition.X.Offset + delta.X,
+                self.DragStartPosition.Y.Scale,
+                self.DragStartPosition.Y.Offset + delta.Y
+            )
+        end
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            self.Dragging = false
+        end
+    end)
+    
+    -- Keybind for minimize (L key)
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if not gameProcessed and input.KeyCode == Enum.KeyCode.L then
+            self.MinimizeBtn:Activate()
+        end
+    end)
+    
+    -- Prevent sliders from dragging GUI
+    local function preventSliderDrag(frame)
+        frame.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                self.Dragging = false
+            end
+        end)
     end
     
-    print("🛑 Auto mining stopped.")
-end
-
-function AutoMiner.isActive()
-    return SYSTEMS.MiningActive
-end
-
--- 2. SLIDER TWEEN SPEED (20-80)
-function AutoMiner.setTweenSpeed(speed)
-    CONFIG.TweenSpeed = math.clamp(speed, 20, 80)
-    print(string.format("⚙️ Tween Speed diatur: %d", CONFIG.TweenSpeed))
-    return CONFIG.TweenSpeed
-end
-
-function AutoMiner.getTweenSpeed()
-    return CONFIG.TweenSpeed
-end
-
--- 3. SLIDER Y OFFSET (-7 sampai 7)
-function AutoMiner.setYOffset(offset)
-    CONFIG.YOffset = math.clamp(offset, -7, 7)
-    print(string.format("⚙️ Y Offset diatur: %d", CONFIG.YOffset))
-    return CONFIG.YOffset
-end
-
-function AutoMiner.getYOffset()
-    return CONFIG.YOffset
-end
-
--- Filter Configuration
-function AutoMiner.setFilter(category, name, value)
-    if SYSTEMS.Filter[category] then
-        SYSTEMS.Filter[category][name] = value
-        updateFilterStatus()
-        return true
-    end
-    return false
-end
-
-function AutoMiner.getFilter(category, name)
-    if SYSTEMS.Filter[category] then
-        return SYSTEMS.Filter[category][name]
-    end
-    return nil
-end
-
-function AutoMiner.getFilterStatus()
-    return {
-        isActive = SYSTEMS.Filter.IsActive,
-        zones = countTable(SYSTEMS.Filter.Zones, true),
-        rocks = countTable(SYSTEMS.Filter.Rocks, true),
-        ores = countTable(SYSTEMS.Filter.Ores, true)
-    }
-end
-
-function AutoMiner.getDataLists()
-    return {
-        Zones = DATA.Zones,
-        Rocks = DATA.Rocks,
-        Ores = DATA.Ores
-    }
-end
-
--- Stats and Info
-function AutoMiner.getStats()
-    local rockCount = 0
-    for _, rocks in pairs(SYSTEMS.Cache.ZoneRocks) do
-        rockCount = rockCount + #rocks
-    end
+    preventSliderDrag(self.TweenSpeedSlider)
+    preventSliderDrag(self.YOffsetSlider)
     
-    return {
-        miningActive = SYSTEMS.MiningActive,
-        tweenSpeed = CONFIG.TweenSpeed,
-        yOffset = CONFIG.YOffset,
-        miningInterval = CONFIG.MiningInterval,
-        zones = countTable(SYSTEMS.Cache.Zones),
-        rocks = rockCount,
-        filterActive = SYSTEMS.Filter.IsActive,
-        currentRock = SYSTEMS.CurrentRock and SYSTEMS.CurrentRock.Name or "None",
-        nextRock = SYSTEMS.NextRock and SYSTEMS.NextRock.Name or "None",
-        avgDamage = SYSTEMS.Predictor.AverageDamage
-    }
+    -- Update loop
+    spawn(function()
+        while self.Enabled do
+            self:UpdateStatus()
+            wait(0.5)
+        end
+    end)
 end
 
--- Mining Control
-function AutoMiner.rescan()
-    return scanWorkspace()
+-- Public API
+function MiningGUI:Show()
+    if not self.ScreenGui then
+        self:Create()
+    else
+        self.ScreenGui.Enabled = true
+        self.Enabled = true
+    end
 end
 
--- Swing Prediction
-function AutoMiner.getSwingStats()
-    return {
-        averageDamage = SYSTEMS.Predictor.AverageDamage,
-        sampleCount = #SYSTEMS.Predictor.Samples,
-        rockDataCount = countTable(SYSTEMS.Predictor.RockData)
-    }
+function MiningGUI:Hide()
+    if self.ScreenGui then
+        self.ScreenGui.Enabled = false
+        self.Enabled = false
+    end
 end
 
-function AutoMiner.resetPrediction()
-    SYSTEMS.Predictor = {
-        Samples = {},
-        RockData = {},
-        AverageDamage = 20
-    }
-    print("✅ Swing prediction data direset")
+function MiningGUI:Toggle()
+    if not self.ScreenGui or not self.ScreenGui.Enabled then
+        self:Show()
+    else
+        self:Hide()
+    end
 end
 
--- Debug
-function AutoMiner.printStatus()
-    print("=== MINING STATUS ===")
-    print(string.format("Aktif: %s", SYSTEMS.MiningActive and "YA" or "TIDAK"))
-    print(string.format("Rock saat ini: %s", 
-        SYSTEMS.CurrentRock and SYSTEMS.CurrentRock.Name or "None"))
-    print(string.format("Target berikutnya: %s", 
-        SYSTEMS.NextRock and SYSTEMS.NextRock.Name or "None"))
-    print(string.format("Tween Speed: %d", CONFIG.TweenSpeed))
-    print(string.format("Y Offset: %d", CONFIG.YOffset))
-    
-    local stats = AutoMiner.getSwingStats()
-    print(string.format("Prediksi Swing - Avg Damage: %d, Samples: %d", 
-        stats.averageDamage, stats.sampleCount))
-end
+-- Auto-create on load
+task.wait(1)
+MiningGUI:Create()
 
-return AutoMiner
+return MiningGUI
