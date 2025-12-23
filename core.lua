@@ -4,8 +4,6 @@ local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local CAMERA_BIND_NAME = "Forge_CameraFollow"
-
 -- ========= [1] DATA REPOSITORY (UTUH) =========
 local DATA = {
 	Zones = {
@@ -47,9 +45,8 @@ local function setDefault(k, v)
 end
 
 setDefault("AutoFarm", false)
-setDefault("TweenSpeed", 45) -- Sedikit dipercepat untuk responsivitas
+setDefault("TweenSpeed", 45)
 setDefault("YOffset", -4)
-setDefault("ScanInterval", 0.25)
 setDefault("HitInterval", 0.15)
 setDefault("CameraStabilize", true)
 
@@ -72,7 +69,7 @@ local function GetHumanoid()
 	return c and c:FindFirstChildOfClass("Humanoid")
 end
 
--- ========= [4] NOCLIP ENGINE (GHOST MODE) =========
+-- ========= [4] NOCLIP ENGINE =========
 local noclipConn
 local function enableNoclip()
 	if noclipConn then return end
@@ -107,7 +104,7 @@ local function UpdateCameraState()
 	end
 end
 
--- ========= [6] TARGET LOGIC & HIT =========
+-- ========= [6] TARGET LOGIC & FORCE HIT =========
 local CACHED_REMOTE = nil
 task.spawn(function()
 	pcall(function()
@@ -123,31 +120,42 @@ task.spawn(function()
 end)
 
 local function HitPickaxe()
+	local plr = Players.LocalPlayer
+	local char = plr.Character
+	if not char then return end
+
+	-- [UBAH] FORCE ATTACH: Manipulasi Parent langsung (Bypass Animasi)
+	-- Ini membuat game "melihat" pickaxe ada di karakter seketika
+	local pickaxe = char:FindFirstChild("Pickaxe")
+	if not pickaxe then
+		local backpackPickaxe = plr.Backpack:FindFirstChild("Pickaxe")
+		if backpackPickaxe then
+			backpackPickaxe.Parent = char -- Pindah paksa ke karakter
+		end
+	end
+	
+	-- Tembak Remote setelah Pickaxe dipastikan ada di Char
 	if CACHED_REMOTE then
 		CACHED_REMOTE:InvokeServer("Pickaxe")
 	end
 end
 
 local function IsRockValid(rockModel)
-	-- Anti-KS
 	local owner = rockModel:GetAttribute("LastHitPlayer")
 	if owner and owner ~= Players.LocalPlayer.Name then return false end
 
-	-- Dead Check
 	local hp = rockModel:GetAttribute("Health")
 	if hp and hp <= 0 then return false end
 	
-	-- Filter Logic
 	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
 	local hpPercent = ((hp or maxHP)/maxHP)*100
 	
-	-- Cek Filter Ore/Rock Selection
 	local anyR = false
 	for _, v in pairs(Settings.Rocks) do if v then anyR = true break end end
 	local anyO = false
 	for _, v in pairs(Settings.Ores) do if v then anyO = true break end end
 
-	if hpPercent <= 45 then -- Revealed
+	if hpPercent <= 45 then
 		if anyOreSelected then
 			local hasTargetOre = false
 			for _, child in ipairs(rockModel:GetChildren()) do
@@ -159,7 +167,7 @@ local function IsRockValid(rockModel)
 		end
 		if anyRockSelected then return Settings.Rocks[rockModel.Name] == true end
 		return true
-	else -- Hidden
+	else
 		if anyRockSelected then return Settings.Rocks[rockModel.Name] == true end
 		return true
 	end
@@ -195,16 +203,14 @@ local function GetBestTargetPart()
 	return closest
 end
 
--- ========= [7] SIMPLIFIED MAIN LOOP =========
+-- ========= [7] MAIN LOOP =========
 task.spawn(function()
 	local currentTween = nil
 	
 	while _G.FarmLoop do
-		-- Loop cepat agar responsif
 		task.wait() 
 
 		if Settings.AutoFarm then
-			-- 1. Selalu Noclip
 			enableNoclip()
 			UpdateCameraState()
 
@@ -215,59 +221,50 @@ task.spawn(function()
 				local target = GetBestTargetPart()
 
 				if target then
-					-- Kalkulasi Posisi
 					local rockPos = target.Position
 					local standPos = rockPos + Vector3.new(0, Settings.YOffset, 0)
 					local lookCF = CFrame.lookAt(standPos, rockPos)
 					local dist = (root.Position - standPos).Magnitude
 
-					-- 2. Logika Gerak vs Diam
 					if dist > 3 then
-						-- MODE: TERBANG
+						-- FLY TO TARGET
 						root.Anchored = false
 						hum.PlatformStand = false 
 						
-						-- Hitung durasi tween
 						local speed = Settings.TweenSpeed or 45
 						local info = TweenInfo.new(dist / speed, Enum.EasingStyle.Linear)
 						
-						-- Cek apakah perlu buat tween baru (biar gak spam object)
 						if not currentTween or currentTween.PlaybackState == Enum.PlaybackState.Completed then
 							currentTween = TweenService:Create(root, info, {CFrame = lookCF})
 							currentTween:Play()
 						else
-							-- Kalau target berubah drastis, cancel yg lama
 							currentTween:Cancel()
 							currentTween = TweenService:Create(root, info, {CFrame = lookCF})
 							currentTween:Play()
 						end
 						
-						-- Tunggu sebentar biar loop tidak spam CPU saat tween
+						-- Force Tool Check saat terbang agar siap
+						HitPickaxe() 
 						task.wait(0.05)
 					else
-						-- MODE: POSISI TETAP (MINING)
+						-- ANCHOR & MINE
 						if currentTween then currentTween:Cancel() currentTween = nil end
 						
-						-- Kunci Posisi secara Absolut
 						root.CFrame = lookCF
 						root.AssemblyLinearVelocity = Vector3.zero
 						root.AssemblyAngularVelocity = Vector3.zero
-						root.Anchored = true -- Sesuai perintah: Posisi Tetap
+						root.Anchored = true 
 						
-						-- Pukul
 						HitPickaxe()
 						
-						-- Delay Hit agar tidak terlalu cepat
 						task.wait(Settings.HitInterval)
 					end
 				else
-					-- Tidak ada target: Diam di tempat (atau unanchor bebas)
 					if currentTween then currentTween:Cancel() end
 					root.Anchored = false
 				end
 			end
 		else
-			-- AutoFarm Mati
 			disableNoclip()
 			local _, r = GetCharAndRoot()
 			if r then r.Anchored = false end
@@ -275,4 +272,4 @@ task.spawn(function()
 	end
 end)
 
-print("[✓] LOGIKA REVISI: FLY -> ANCHOR -> HIT")
+print("[✓] FIX: FORCE ATTACH PICKAXE (BYPASS EQUIP ANIMATION)")
