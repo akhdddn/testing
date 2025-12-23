@@ -4,7 +4,7 @@ local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- ========= [1] DATA REPOSITORY (UTUH) =========
+-- ========= [1] DATA REPOSITORY =========
 local DATA = {
 	Zones = {
 		"Island2CaveDanger1","Island2CaveDanger2","Island2CaveDanger3",
@@ -40,6 +40,15 @@ Settings.Zones = Settings.Zones or {}
 Settings.Rocks = Settings.Rocks or {}
 Settings.Ores  = Settings.Ores  or {}
 
+-- [GUI COMPATIBILITY] Farm Status Container
+-- Ini agar GUI bisa membaca status target saat ini
+_G.FarmStatus = {
+	TargetName = "None",
+	Distance = 0,
+	TargetHP = 0,
+	MaxHP = 0
+}
+
 local function setDefault(k, v)
 	if Settings[k] == nil then Settings[k] = v end
 end
@@ -50,64 +59,37 @@ setDefault("YOffset", -4)
 setDefault("HitInterval", 0.15)
 setDefault("CameraStabilize", true)
 
+-- Ensure keys exist for GUI switches
 for _, n in ipairs(DATA.Zones) do if Settings.Zones[n] == nil then Settings.Zones[n] = false end end
 for _, n in ipairs(DATA.Rocks) do if Settings.Rocks[n] == nil then Settings.Rocks[n] = false end end
 for _, n in ipairs(DATA.Ores)  do if Settings.Ores[n]  == nil then Settings.Ores[n]  = false end end
 
 if _G.FarmLoop == nil then _G.FarmLoop = true end
 
--- ========= [3] DEBUG SYSTEM (ADDED) =========
-local DEBUG = {
-	Enabled = true,
-	Logs = {},
-	MaxLogs = 100,
-}
-
--- [TAMBAH] Debug log function
+-- ========= [3] DYNAMIC DEBUG SYSTEM (GUI LINKED) =========
+-- Fungsi ini mengecek apakah GUI sudah mendefinisikan _G.DebugLog.
+-- Jika ya, ia menggunakan logger GUI. Jika tidak, pakai print biasa.
 local function DebugLog(tag, message, logType)
-	logType = logType or "INFO"
-	local timestamp = os.date("%H:%M:%S")
-	local logEntry = string.format("[%s] [%s] [%s] %s", timestamp, tag, logType, message)
-	
-	table.insert(DEBUG.Logs, logEntry)
-	if #DEBUG.Logs > DEBUG.MaxLogs then table.remove(DEBUG.Logs, 1) end
-	
-	print(logEntry)
-	
-	-- [TAMBAH] Color coding untuk error
-	if logType == "ERROR" then
-		warn("⚠️ ERROR: " .. message) -- Menggunakan warn agar kuning di console
-	elseif logType == "SUCCESS" then
-		print("✓ SUCCESS: " .. message)
-	elseif logType == "DEBUG" then
-		print("🔍 DEBUG: " .. message)
+	if _G.DebugLog and typeof(_G.DebugLog) == "function" then
+		pcall(function() _G.DebugLog(tag, message, logType) end)
+	else
+		-- Fallback jika GUI belum load
+		local timestamp = os.date("%H:%M:%S")
+		local prefix = (logType == "ERROR" and "⚠️") or (logType == "SUCCESS" and "✓") or "ℹ️"
+		print(string.format("[%s] %s [%s] %s", timestamp, prefix, tag, message))
 	end
 end
 
--- [TAMBAH] Dump debug logs
-local function DumpDebugLogs()
-	print("\n========= DEBUG LOG DUMP ==========")
-	for i, log in ipairs(DEBUG.Logs) do
-		print(string.format("%d. %s", i, log))
-	end
-	print("====================================\n")
+-- Init Debug log default jika belum ada (agar tidak error sebelum GUI load)
+if not _G.DebugLog then
+	_G.DebugLog = DebugLog
 end
-
-_G.DebugLog = DebugLog
-_G.DumpDebugLogs = DumpDebugLogs
 
 -- ========= [4] UTILS & HELPERS =========
 local function GetCharAndRoot()
 	local c = Players.LocalPlayer.Character
-	if not (c and c.Parent) then 
-		DebugLog("CHAR", "Character not found", "ERROR")
-		return nil, nil 
-	end
+	if not (c and c.Parent) then return nil, nil end
 	local r = c:FindFirstChild("HumanoidRootPart")
-	if not r then
-		DebugLog("CHAR", "HumanoidRootPart not found", "ERROR")
-		return nil, nil
-	end
 	return c, r
 end
 
@@ -117,7 +99,7 @@ local function GetHumanoid()
 	return c:FindFirstChildOfClass("Humanoid")
 end
 
--- ========= [5] NOCLIP ENGINE (OPTIMIZED) =========
+-- ========= [5] NOCLIP ENGINE =========
 local noclipConn
 local function enableNoclip()
 	if noclipConn then return end
@@ -126,19 +108,16 @@ local function enableNoclip()
 		if c then
 			for _, v in ipairs(c:GetDescendants()) do
 				if v:IsA("BasePart") and v.CanCollide == true then
-					-- ARCHITECT NOTE: Hanya set jika true untuk hemat performa
 					v.CanCollide = false
 				end
 			end
 		end
 	end)
-	DebugLog("NOCLIP", "Enabled", "SUCCESS")
 end
 
 local function disableNoclip()
 	if noclipConn then noclipConn:Disconnect() end
 	noclipConn = nil
-	DebugLog("NOCLIP", "Disabled", "SUCCESS")
 end
 
 -- ========= [6] CAMERA STABILIZER =========
@@ -155,151 +134,76 @@ local function UpdateCameraState()
 	end
 end
 
--- ========= [7] REMOTE CACHE WITH DEBUG =========
+-- ========= [7] REMOTE CACHE =========
 local CACHED_REMOTE = nil
 local REMOTE_FOUND = false
 
 task.spawn(function()
-	DebugLog("REMOTE", "Attempting to cache ToolActivated remote...", "DEBUG")
+	DebugLog("REMOTE", "Scanning for ToolActivated...", "DEBUG")
 	pcall(function()
-		local shared = ReplicatedStorage:WaitForChild("Shared", 10)
-		DebugLog("REMOTE", "Found: Shared", "DEBUG")
-		
-		local packages = shared:WaitForChild("Packages", 10)
-		DebugLog("REMOTE", "Found: Packages", "DEBUG")
-		
-		local knit = packages:WaitForChild("Knit", 10)
-		DebugLog("REMOTE", "Found: Knit", "DEBUG")
-		
-		local services = knit:WaitForChild("Services", 10)
-		DebugLog("REMOTE", "Found: Services", "DEBUG")
-		
-		local toolService = services:WaitForChild("ToolService", 10)
-		DebugLog("REMOTE", "Found: ToolService", "DEBUG")
-		
-		local rf = toolService:WaitForChild("RF", 10)
-		DebugLog("REMOTE", "Found: RF", "DEBUG")
+		local rf = ReplicatedStorage:WaitForChild("Shared", 5)
+			:WaitForChild("Packages", 5):WaitForChild("Knit", 5)
+			:WaitForChild("Services", 5):WaitForChild("ToolService", 5)
+			:WaitForChild("RF", 5)
 		
 		CACHED_REMOTE = rf:WaitForChild("ToolActivated", 10)
 		REMOTE_FOUND = true
-		DebugLog("REMOTE", "✓ ToolActivated cached successfully", "SUCCESS")
-		print("Remote object:", CACHED_REMOTE)
-		print("Remote class:", CACHED_REMOTE.ClassName)
+		DebugLog("REMOTE", "ToolActivated Found & Cached", "SUCCESS")
 	end)
 	
 	if not REMOTE_FOUND then
-		DebugLog("REMOTE", "FAILED to cache remote (Check Paths)", "ERROR")
+		DebugLog("REMOTE", "FAILED to find Remote. Script may fail.", "ERROR")
 	end
 end)
 
--- ========= [8] PICKAXE MANAGER WITH DEBUG =========
+-- ========= [8] PICKAXE MANAGER =========
 local function CheckPickaxeEquipped()
 	local plr = Players.LocalPlayer
 	local char = plr.Character
-	if not char then
-		DebugLog("PICKAXE", "Character not found", "ERROR")
-		return false
-	end
+	if not char then return false end
 
-	local pickaxeInChar = char:FindFirstChild("Pickaxe")
-	if pickaxeInChar then
-		-- DebugLog("PICKAXE", "Already equipped", "DEBUG") -- Spammy log
+	if char:FindFirstChild("Pickaxe") then return true end
+	
+	local bp = plr.Backpack:FindFirstChild("Pickaxe")
+	if bp then
+		bp.Parent = char
 		return true
 	end
-	
-	DebugLog("PICKAXE", "Not in character, checking backpack", "DEBUG")
-	local backpackPickaxe = plr.Backpack:FindFirstChild("Pickaxe")
-	
-	if backpackPickaxe then
-		DebugLog("PICKAXE", "Found in backpack, equipping...", "DEBUG")
-		backpackPickaxe.Parent = char
-		task.wait(0.1) -- Beri waktu sedikit untuk server mereplikasi
-		
-		local equipped = char:FindFirstChild("Pickaxe")
-		if equipped then
-			DebugLog("PICKAXE", "✓ Successfully equipped", "SUCCESS")
-			return true
-		else
-			DebugLog("PICKAXE", "Failed to equip (parent change failed)", "ERROR")
-			return false
-		end
-	else
-		DebugLog("PICKAXE", "Pickaxe NOT found in Backpack!", "ERROR")
-		return false
-	end
+	return false
 end
 
--- ========= [9] HIT SYSTEM WITH DEBUG (LOGIC FIXED) =========
-local hitCounter = 0
-
--- ARCHITECT FIX: Menambahkan parameter targetPart agar remote tahu apa yang dipukul
+-- ========= [9] HIT SYSTEM =========
 local function HitTargetDamage(targetPart)
-	hitCounter = hitCounter + 1
-	local hitID = hitCounter
-	
-	-- DebugLog("HIT", "Hit attempt #" .. hitID, "DEBUG") -- Un-comment jika perlu trace detail
-	
-	local plr = Players.LocalPlayer
-	local char = plr.Character
-	
-	if not char then return false end
-	
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hum or hum.Health <= 0 then return false end
-
-	-- [DEBUG] Check pickaxe
 	if not CheckPickaxeEquipped() then return false end
+	if not REMOTE_FOUND or not CACHED_REMOTE then return false end
 
-	-- [DEBUG] Check remote
-	if not REMOTE_FOUND or not CACHED_REMOTE then
-		DebugLog("HIT", "[#" .. hitID .. "] Remote invalid", "ERROR")
-		return false
-	end
-
-	-- [ARCHITECT FIX] Invoking dengan target part
-	-- Banyak game membutuhkan instance target sebagai argumen
-	local success, result = pcall(function()
+	local success, _ = pcall(function()
 		return CACHED_REMOTE:InvokeServer("Pickaxe", targetPart)
 	end)
 
-	if success then
-		-- DebugLog("HIT", "[#" .. hitID .. "] ✓ Remote invoked", "SUCCESS")
-		return true
-	else
-		DebugLog("HIT", "[#" .. hitID .. "] Remote invoke failed: " .. tostring(result), "ERROR")
-		return false
-	end
+	return success
 end
 
--- ========= [10] TARGET VALIDATION WITH DEBUG =========
+-- ========= [10] TARGET VALIDATION =========
 local function IsRockValid(rockModel)
-	if not rockModel or not rockModel.Parent then
-		return false
-	end
+	if not rockModel or not rockModel.Parent then return false end
 	
-	-- Check ownership (agar tidak mencuri batu orang lain jika game membatasinya)
 	local owner = rockModel:GetAttribute("LastHitPlayer")
 	if owner and owner ~= Players.LocalPlayer.Name and owner ~= "" then
-		-- Opsional: return false jika ingin menghindari KS (Kill Steal)
-		-- return false 
+		-- return false -- Uncomment to respect ownership
 	end
 
 	local hp = rockModel:GetAttribute("Health")
 	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
 	
-	if hp and hp <= 0 then
-		return false
-	end
+	if hp and hp <= 0 then return false end
 	
 	local hpPercent = ((hp or maxHP)/maxHP)*100
-	
 	local anyRockSelected = false
 	for _, v in pairs(Settings.Rocks) do if v then anyRockSelected = true break end end
-	
 	local anyOreSelected = false
 	for _, v in pairs(Settings.Ores) do if v then anyOreSelected = true break end end
 
-	-- Prioritas Ore (biasanya muncul saat HP batu rendah)
 	if hpPercent <= 45 then
 		if anyOreSelected then
 			for _, child in ipairs(rockModel:GetChildren()) do
@@ -307,7 +211,6 @@ local function IsRockValid(rockModel)
 					if Settings.Ores[child:GetAttribute("Ore")] then return true end
 				end
 			end
-			-- Jika tidak ada ore spesifik, cek apakah batu itu sendiri dipilih
 			if anyRockSelected then return Settings.Rocks[rockModel.Name] == true end
 			return false
 		end
@@ -319,12 +222,8 @@ local function IsRockValid(rockModel)
 	end
 end
 
--- ========= [11] TARGET FINDER WITH DEBUG =========
-local targetFindCounter = 0
-
+-- ========= [11] TARGET FINDER =========
 local function GetBestTargetPart()
-	targetFindCounter = targetFindCounter + 1
-	
 	local _, r = GetCharAndRoot()
 	if not r then return nil end
 	
@@ -358,23 +257,18 @@ local function GetBestTargetPart()
 	return closest
 end
 
--- ========= [12] MAIN LOOP WITH DEBUG =========
+-- ========= [12] MAIN LOOP =========
 task.spawn(function()
 	local currentTween = nil
 	local loopCounter = 0
 	
-	DebugLog("LOOP", "Farm loop started", "SUCCESS")
+	DebugLog("CORE", "Logic loop initialized", "SUCCESS")
 	
 	while _G.FarmLoop do
 		task.wait() 
 		loopCounter = loopCounter + 1
 
 		if Settings.AutoFarm then
-			-- [DEBUG] Heartbeat check
-			if loopCounter % 120 == 0 then
-				DebugLog("LOOP", "Heartbeat (Active)", "DEBUG")
-			end
-			
 			enableNoclip()
 			UpdateCameraState()
 
@@ -388,10 +282,22 @@ task.spawn(function()
 
 			local target = GetBestTargetPart()
 
+			-- [GUI SYNC] Update Status Global
+			if target and target.Parent then
+				local pModel = target.Parent
+				_G.FarmStatus.TargetName = pModel.Name
+				_G.FarmStatus.Distance = math.floor((root.Position - target.Position).Magnitude)
+				_G.FarmStatus.TargetHP = math.floor(pModel:GetAttribute("Health") or 0)
+				_G.FarmStatus.MaxHP = math.floor(pModel:GetAttribute("MaxHealth") or 100)
+			else
+				_G.FarmStatus.TargetName = "Searching..."
+				_G.FarmStatus.Distance = 0
+				_G.FarmStatus.TargetHP = 0
+			end
+
 			if not target then
-				-- Jika tidak ada target, diamkan karakter
 				if currentTween then currentTween:Cancel() end
-				task.wait(0.5)
+				task.wait(0.2)
 				goto loop_end
 			end
 
@@ -401,9 +307,8 @@ task.spawn(function()
 			local dist = (root.Position - standPos).Magnitude
 
 			if dist > 3.5 then
-				-- ===== MOVEMENT PHASE =====
+				-- MOVEMENT
 				root.Anchored = false
-				
 				local speed = Settings.TweenSpeed or 45
 				local duration = math.max(0.1, dist / speed)
 				local info = TweenInfo.new(duration, Enum.EasingStyle.Linear)
@@ -412,34 +317,31 @@ task.spawn(function()
 					pcall(function()
 						currentTween = TweenService:Create(root, info, {CFrame = lookCF})
 						currentTween:Play()
+						DebugLog("MOVE", "Moving to " .. target.Parent.Name .. " ("..math.floor(dist).." studs)", "DEBUG")
 					end)
 				else
-					-- Logic untuk memperbarui tween jika target bergerak sedikit
-					if (currentTween.Instance == root) then
-						-- Biarkan tween berjalan, kecuali target berubah drastis
-					else
-						currentTween:Cancel()
-					end
+					if (currentTween.Instance ~= root) then currentTween:Cancel() end
 				end
-				
-				task.wait(0.05)
-				
+				task.wait(0.1)
 			else
-				-- ===== MINING PHASE =====
+				-- MINING
 				if currentTween then 
 					pcall(function() currentTween:Cancel() end)
 					currentTween = nil 
 				end
 				
-				-- Kunci posisi & hapus momentum
 				root.AssemblyLinearVelocity = Vector3.zero 
 				root.AssemblyAngularVelocity = Vector3.zero
-				root.CFrame = lookCF -- Paksa hadap target
+				root.CFrame = lookCF
 				root.Anchored = true 
 				
-				-- [ARCHITECT FIX] Pass 'target' ke fungsi hit
 				local hitSuccess = HitTargetDamage(target)
 				
+				-- Optional: Log hit jarang-jarang agar tidak spam
+				if loopCounter % 20 == 0 then
+					DebugLog("MINE", "Hitting " .. target.Parent.Name .. " | HP: " .. _G.FarmStatus.TargetHP, "DEBUG")
+				end
+
 				task.wait(Settings.HitInterval)
 			end
 
@@ -449,17 +351,13 @@ task.spawn(function()
 			local _, r = GetCharAndRoot()
 			if r then r.Anchored = false end
 			if currentTween then currentTween:Cancel() end
+			
+			_G.FarmStatus.TargetName = "Idle"
 			task.wait(1)
 		end
 	end
-	
-	DebugLog("LOOP", "Farm loop ended", "SUCCESS")
 end)
 
--- ========= [13] STARTUP DEBUG =========
-task.wait(1)
-print("\n========= ARCHITECT FIXED SCRIPT STARTED ==========")
-DebugLog("STARTUP", "Script loaded & Optimized", "SUCCESS")
-DebugLog("STARTUP", "AutoFarm setting: " .. tostring(Settings.AutoFarm), "DEBUG")
-DebugLog("STARTUP", "Type: _G.DumpDebugLogs() to see full log", "INFO")
-print("==================================================\n")
+-- ========= [13] READY SIGNAL =========
+task.wait(0.5)
+DebugLog("CORE", "Core Script Ready for GUI", "SUCCESS")
