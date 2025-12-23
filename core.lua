@@ -55,7 +55,8 @@ setDefault("HitInterval", 0.15)
 setDefault("TargetStickTime", 0.35)
 setDefault("LockToTarget", true)
 setDefault("LockVelocityZero", true)
-setDefault("AnchorDuringLock", true)
+-- [PERBAIKAN] Dikembalikan ke true agar stabil dan bisa memukul
+setDefault("AnchorDuringLock", true) 
 setDefault("CameraStabilize", true)
 
 for _, n in ipairs(DATA.Zones) do if Settings.Zones[n] == nil then Settings.Zones[n] = false end end
@@ -189,14 +190,14 @@ local function StartLock(rootPart, cf)
 
 	if lockHum then
 		prevPlatformStand, prevAutoRotate = lockHum.PlatformStand, lockHum.AutoRotate
-		-- *** IMPLEMENTASI VISUAL SWING FIX ***
-		-- PlatformStand harus FALSE agar animasi swing default Roblox tetap jalan
+		-- Tetap False agar animasi jalan
 		lockHum.PlatformStand = false 
 		lockHum.AutoRotate = false
 	end
 
 	if lockRoot then
 		prevAnchored = lockRoot.Anchored
+		-- [PERBAIKAN] Paksa Anchored TRUE jika setting nyala
 		if Settings.AnchorDuringLock then
 			lockRoot.Anchored = true
 		end
@@ -518,7 +519,7 @@ task.spawn(function()
 								lockedTarget = nil
 								lockedUntil = 0
 							else
-								-- PUKUL LANGSUNG tanpa Logic ganda
+								-- PUKUL LANGSUNG
 								HitPickaxe()
 							end
 						end
@@ -539,4 +540,4 @@ task.spawn(function()
 	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: PLATFORMSTAND OFF (ANIM FIX) + DAMAGE")
+print("[✓] FORGE CORE: RESTORED ANCHOR + PLATFORMSTAND OFF")
