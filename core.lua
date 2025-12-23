@@ -1,10 +1,3 @@
---// ==========================================================
---// THE FORGE CORE: FINAL FIX (REMOTE CACHING)
---// ==========================================================
---// Status: FINAL
---// Fix: "Not Mining" caused by WaitForChild loop spam.
---// Solution: Remote path is cached ONCE, then Invoked continuously.
-
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local TweenService = game:GetService("TweenService")
@@ -196,7 +189,10 @@ local function StartLock(rootPart, cf)
 
 	if lockHum then
 		prevPlatformStand, prevAutoRotate = lockHum.PlatformStand, lockHum.AutoRotate
-		lockHum.PlatformStand, lockHum.AutoRotate = true, false
+		-- *** PERUBAHAN: JANGAN PLATFORMSTAND TRUE ***
+		-- Biarkan PlatformStand false agar Animate & animasi lain tetap jalan
+		lockHum.PlatformStand = false
+		lockHum.AutoRotate = false
 	end
 
 	if lockRoot then
