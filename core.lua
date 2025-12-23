@@ -47,16 +47,10 @@ local function setDefault(k, v)
 end
 
 setDefault("AutoFarm", false)
-setDefault("TweenSpeed", 40)
+setDefault("TweenSpeed", 45) -- Sedikit dipercepat untuk responsivitas
 setDefault("YOffset", -4)
-setDefault("CheckThreshold", 45)
 setDefault("ScanInterval", 0.25)
 setDefault("HitInterval", 0.15)
-setDefault("TargetStickTime", 0.35)
-setDefault("LockToTarget", true)
-setDefault("LockVelocityZero", true)
--- [PERBAIKAN] Dikembalikan ke true agar stabil dan bisa memukul
-setDefault("AnchorDuringLock", true) 
 setDefault("CameraStabilize", true)
 
 for _, n in ipairs(DATA.Zones) do if Settings.Zones[n] == nil then Settings.Zones[n] = false end end
@@ -79,51 +73,16 @@ local function GetHumanoid()
 end
 
 -- ========= [4] NOCLIP ENGINE (GHOST MODE) =========
-local noclipConn, descConn
-local partsSet = {}
-local originalStates = {} 
-
-local function cacheCharacterParts(c)
-	table.clear(partsSet)
-	table.clear(originalStates)
-	if not c then return end
-	for _, inst in ipairs(c:GetDescendants()) do
-		if inst:IsA("BasePart") then
-			partsSet[inst] = true
-			originalStates[inst] = {
-				CanCollide = inst.CanCollide,
-				CanTouch = inst.CanTouch,
-				CanQuery = inst.CanQuery
-			}
-		end
-	end
-end
-
+local noclipConn
 local function enableNoclip()
 	if noclipConn then return end
-	local c = Players.LocalPlayer.Character
-	cacheCharacterParts(c)
-
-	if descConn then descConn:Disconnect() end
-	if c then
-		descConn = c.DescendantAdded:Connect(function(inst)
-			if inst:IsA("BasePart") then
-				partsSet[inst] = true
-				inst.CanCollide = false
-				inst.CanTouch = false
-				inst.CanQuery = false
-			end
-		end)
-	end
-
 	noclipConn = RunService.Stepped:Connect(function()
-		for part in pairs(partsSet) do
-			if part and part.Parent then
-				part.CanCollide = false
-				part.CanTouch = false
-				part.CanQuery = false
-			else
-				partsSet[part] = nil
+		local c = Players.LocalPlayer.Character
+		if c then
+			for _, v in ipairs(c:GetDescendants()) do
+				if v:IsA("BasePart") and v.CanCollide then
+					v.CanCollide = false
+				end
 			end
 		end
 	end)
@@ -131,205 +90,25 @@ end
 
 local function disableNoclip()
 	if noclipConn then noclipConn:Disconnect() end
-	if descConn then descConn:Disconnect() end
-	noclipConn, descConn = nil, nil
-
-	for part, states in pairs(originalStates) do
-		if part and part.Parent then 
-			part.CanCollide = states.CanCollide
-			part.CanTouch = states.CanTouch
-			part.CanQuery = states.CanQuery
-		end
-	end
-	table.clear(partsSet)
-	table.clear(originalStates)
+	noclipConn = nil
 end
 
--- ========= [5] HARD LOCK =========
-local lockConn, lockRoot, lockCFrame, lockHum
-local prevPlatformStand, prevAutoRotate, prevAnchored
-
-local DRIFT_POS_EPS = 0.02
-local DRIFT_ANG_EPS = math.rad(0.25)
-
-local function StopLock()
-	if lockConn then lockConn:Disconnect() end
-	lockConn = nil
-
-	if lockRoot and lockRoot.Parent and prevAnchored ~= nil then
-		lockRoot.Anchored = prevAnchored
-	end
-
-	if lockHum and lockHum.Parent then
-		lockHum.PlatformStand = prevPlatformStand or false
-		lockHum.AutoRotate = prevAutoRotate or true
-	end
-
-	lockRoot, lockHum, lockCFrame = nil, nil, nil
-end
-
-local function StartLock(rootPart, cf)
-	if not Settings.LockToTarget then StopLock() return end
-
-	-- Force Ghost Mode
-	for _, v in ipairs(rootPart.Parent:GetDescendants()) do
-		if v:IsA("BasePart") then
-			v.CanCollide = false
-			v.CanTouch = false
-			v.CanQuery = false
-		end
-	end
-
-	if lockConn and lockRoot == rootPart then
-		lockCFrame = cf
-		return 
-	end
-
-	lockRoot, lockCFrame = rootPart, cf
-	lockHum = GetHumanoid()
-
-	if lockHum then
-		prevPlatformStand, prevAutoRotate = lockHum.PlatformStand, lockHum.AutoRotate
-		-- Tetap False agar animasi jalan
-		lockHum.PlatformStand = false 
-		lockHum.AutoRotate = false
-	end
-
-	if lockRoot then
-		prevAnchored = lockRoot.Anchored
-		-- [PERBAIKAN] Paksa Anchored TRUE jika setting nyala
-		if Settings.AnchorDuringLock then
-			lockRoot.Anchored = true
-		end
-
-		lockRoot.CFrame = lockCFrame
-		if Settings.LockVelocityZero then
-			lockRoot.AssemblyLinearVelocity = Vector3.zero
-			lockRoot.AssemblyAngularVelocity = Vector3.zero
-		end
-	end
-
-	if lockConn then lockConn:Disconnect() end
-
-	lockConn = RunService.PreSimulation:Connect(function()
-		if not (lockRoot and lockRoot.Parent and lockCFrame) then return end
-
-		local cur = lockRoot.CFrame
-		local dp = (cur.Position - lockCFrame.Position).Magnitude
-		local _, ang = (cur:ToObjectSpace(lockCFrame)):ToAxisAngle()
-
-		if dp > DRIFT_POS_EPS or math.abs(ang) > DRIFT_ANG_EPS then
-			lockRoot.CFrame = lockCFrame
-		end
-
-		if Settings.LockVelocityZero then
-			lockRoot.AssemblyLinearVelocity = Vector3.zero
-			lockRoot.AssemblyAngularVelocity = Vector3.zero
-		end
-	end)
-end
-
--- ========= [6] CAMERA (PASSIVE) =========
-local camApplied = false
-local prevOcclusionMode = nil
-local prevCamType = nil
-local prevCamSubject = nil
-
-local function IsMiningState()
-	if not Settings.AutoFarm then return false end
-	return (lockConn ~= nil and lockRoot ~= nil and lockCFrame ~= nil)
-end
-
-local function StopCameraStabilize()
-	pcall(function() RunService:UnbindFromRenderStep(CAMERA_BIND_NAME) end)
-
-	local cam = Workspace.CurrentCamera
+-- ========= [5] CAMERA STABILIZER =========
+local function UpdateCameraState()
 	local plr = Players.LocalPlayer
-
-	if cam then
-		if prevCamType ~= nil then cam.CameraType = prevCamType end
-		if prevCamSubject ~= nil then cam.CameraSubject = prevCamSubject end
-	end
-	if plr and prevOcclusionMode ~= nil then
-		pcall(function()
-			plr.DevCameraOcclusionMode = prevOcclusionMode
-		end)
-	end
-
-	prevOcclusionMode, prevCamType, prevCamSubject = nil, nil, nil
-	camApplied = false
-end
-
-local function StartCameraStabilize()
-	if not Settings.CameraStabilize then StopCameraStabilize() return end
-	if camApplied then return end
-
-	local cam = Workspace.CurrentCamera
-	local plr = Players.LocalPlayer
-	if not (cam and plr) then return end
-
-	prevOcclusionMode = plr.DevCameraOcclusionMode
-	prevCamType = cam.CameraType
-	prevCamSubject = cam.CameraSubject
-
-	cam.CameraType = Enum.CameraType.Custom
-	local hum = GetHumanoid()
-	if hum then cam.CameraSubject = hum end
-
-	if IsMiningState() then
-		pcall(function()
+	local c = plr.Character
+	
+	if Settings.AutoFarm and Settings.CameraStabilize and c then
+		local hum = c:FindFirstChild("Humanoid")
+		if hum then
+			Workspace.CurrentCamera.CameraSubject = hum
 			plr.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
-		end)
-	end
-
-	camApplied = true
-end
-
-local camStateConn = nil
-local lastMining = nil
-
-local function StartCameraStateManager()
-	if camStateConn then return end
-	camStateConn = RunService.Heartbeat:Connect(function()
-		if not camApplied then return end
-
-		local cam = Workspace.CurrentCamera
-		local plr = Players.LocalPlayer
-		if not (cam and plr) then return end
-
-		local mining = IsMiningState()
-		if mining ~= lastMining then
-			lastMining = mining
-
-			cam.CameraType = Enum.CameraType.Custom
-			local hum = GetHumanoid()
-			if hum then cam.CameraSubject = hum end
-
-			if mining then
-				pcall(function()
-					plr.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
-				end)
-			else
-				if prevOcclusionMode ~= nil then
-					pcall(function()
-						plr.DevCameraOcclusionMode = prevOcclusionMode
-					end)
-				end
-			end
 		end
-	end)
+	end
 end
 
-local function StopCameraStateManager()
-	if camStateConn then camStateConn:Disconnect() end
-	camStateConn = nil
-	lastMining = nil
-end
-
--- ========= [7] TARGET LOGIC (OPTIMIZED REMOTE) =========
+-- ========= [6] TARGET LOGIC & HIT =========
 local CACHED_REMOTE = nil
-
--- Cache Remote Once to prevent WaitForChild Loop Spam
 task.spawn(function()
 	pcall(function()
 		CACHED_REMOTE = game:GetService("ReplicatedStorage")
@@ -343,201 +122,157 @@ task.spawn(function()
 	end)
 end)
 
-local lastHit = 0
 local function HitPickaxe()
-	local now = os.clock()
-	if (now - lastHit) < (Settings.HitInterval or 0.15) then return end
-	lastHit = now
-	
-	local args = { "Pickaxe" }
-
 	if CACHED_REMOTE then
-		task.spawn(function()
-			pcall(function()
-				CACHED_REMOTE:InvokeServer(unpack(args))
-			end)
-		end)
+		CACHED_REMOTE:InvokeServer("Pickaxe")
 	end
 end
 
-local function IsRockValid(rockModel, anyOreSelected, anyRockSelected)
-	-- 1. Anti-KS
+local function IsRockValid(rockModel)
+	-- Anti-KS
 	local owner = rockModel:GetAttribute("LastHitPlayer")
-	if owner and owner ~= Players.LocalPlayer.Name then
-		return false
-	end
+	if owner and owner ~= Players.LocalPlayer.Name then return false end
 
-	-- 2. Dead Check
+	-- Dead Check
 	local hp = rockModel:GetAttribute("Health")
 	if hp and hp <= 0 then return false end
 	
+	-- Filter Logic
 	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
 	local hpPercent = ((hp or maxHP)/maxHP)*100
-	local isRevealed = hpPercent <= 45
-
-	if isRevealed then
-		-- A. JIKA BATU SUDAH TERBUKA
-		if anyOreSelected then
-			local hasTargetOre = false
-			for _, child in ipairs(rockModel:GetChildren()) do
-				if child.Name == "Ore" and child:IsA("Model") then
-					local oreName = child:GetAttribute("Ore")
-					if oreName and Settings.Ores[oreName] then
-						hasTargetOre = true
-						break
-					end
-				end
-			end
-			if not hasTargetOre then return false end
-		end
-		if anyRockSelected then
-			if not Settings.Rocks[rockModel.Name] then return false end
-		end
-		return true 
-
-	else
-		-- B. JIKA BATU MASIH TERTUTUP (FRESH)
-		if anyRockSelected then
-			return Settings.Rocks[rockModel.Name] == true
-		end
-		-- Gacha / Reveal Mode
-		return true 
-	end
-end
-
-local function GetBestTargetPart()
-	local _, r = GetCharAndRoot()
-	if not (Settings.AutoFarm and r) then return nil end
-	local rocksFolder = Workspace:FindFirstChild("Rocks")
-	if not rocksFolder then return nil end
-
-	local anyZ = false
-	for _, v in pairs(Settings.Zones) do if v then anyZ = true break end end
+	
+	-- Cek Filter Ore/Rock Selection
 	local anyR = false
 	for _, v in pairs(Settings.Rocks) do if v then anyR = true break end end
 	local anyO = false
 	for _, v in pairs(Settings.Ores) do if v then anyO = true break end end
 
-	local cl, md = nil, math.huge
+	if hpPercent <= 45 then -- Revealed
+		if anyOreSelected then
+			local hasTargetOre = false
+			for _, child in ipairs(rockModel:GetChildren()) do
+				if child.Name == "Ore" and child:IsA("Model") then
+					if Settings.Ores[child:GetAttribute("Ore")] then return true end
+				end
+			end
+			return false
+		end
+		if anyRockSelected then return Settings.Rocks[rockModel.Name] == true end
+		return true
+	else -- Hidden
+		if anyRockSelected then return Settings.Rocks[rockModel.Name] == true end
+		return true
+	end
+end
+
+local function GetBestTargetPart()
+	local _, r = GetCharAndRoot()
+	if not r then return nil end
+	
+	local rocksFolder = Workspace:FindFirstChild("Rocks")
+	if not rocksFolder then return nil end
+
+	local anyZ = false
+	for _, v in pairs(Settings.Zones) do if v then anyZ = true break end end
+
+	local closest, minDist = nil, math.huge
 	
 	for _, zone in ipairs(rocksFolder:GetChildren()) do
 		if zone:IsA("Folder") and (not anyZ or Settings.Zones[zone.Name]) then
 			for _, inst in ipairs(zone:GetDescendants()) do
-				if inst:IsA("Model") and inst.Parent.Name ~= "Rock" then 
-					if IsRockValid(inst, anyO, anyR) then
-						local p = inst.PrimaryPart or inst:FindFirstChild("Hitbox") or inst:FindFirstChildWhichIsA("BasePart")
+				if inst:IsA("Model") and inst.Parent.Name ~= "Rock" then
+					if IsRockValid(inst) then
+						local p = inst.PrimaryPart or inst:FindFirstChild("Hitbox")
 						if p then
 							local d = (r.Position - p.Position).Magnitude
-							if d < md then md = d; cl = p end
+							if d < minDist then minDist = d; closest = p end
 						end
 					end
 				end
 			end
 		end
 	end
-	return cl
+	return closest
 end
 
--- ========= [8] MOVEMENT ENGINE =========
-local activeTween = nil
-local function TweenToPart(targetPart)
-	local _, r = GetCharAndRoot()
-	if not (r and targetPart and targetPart.Parent) then return end
-
-	local rockPos = targetPart.Position
-	local targetPos = rockPos + Vector3.new(0, tonumber(Settings.YOffset) or -4, 0)
-	local lookAtCF = CFrame.lookAt(targetPos, rockPos)
-
-	local dist = (r.Position - targetPos).Magnitude
-	
-	if dist < 8 then
-		if not lockConn then 
-			StartLock(r, lookAtCF)
-		else
-			StartLock(r, lookAtCF) 
-		end
-		return
-	end
-
-	StopLock()
-
-	local speed = math.max(1, tonumber(Settings.TweenSpeed) or 40)
-	local duration = dist / speed
-
-	if activeTween then activeTween:Cancel() end
-	activeTween = TweenService:Create(r, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = lookAtCF})
-	activeTween:Play()
-	activeTween.Completed:Wait()
-
-	if Settings.AutoFarm then
-		StartLock(r, lookAtCF)
-	end
-end
-
--- ========= [9] MAIN EXECUTION LOOP =========
+-- ========= [7] SIMPLIFIED MAIN LOOP =========
 task.spawn(function()
-	local lastScan, lockedTarget, lockedUntil = 0, nil, 0
-	
-	if Settings.AutoFarm then
-		StartCameraStabilize()
-		StartCameraStateManager()
-	end
+	local currentTween = nil
 	
 	while _G.FarmLoop do
-		task.wait(0.05)
-		
-		pcall(function()
-			if Settings.AutoFarm then
-				enableNoclip()
+		-- Loop cepat agar responsif
+		task.wait() 
 
-				local _, r = GetCharAndRoot()
-				if r then
-					local now = os.clock()
-					
-					-- 1. Scan Target
-					if not (lockedTarget and lockedTarget.Parent) or now >= lockedUntil then
-						if now - lastScan >= (Settings.ScanInterval or 0.25) then
-							lastScan = now
-							lockedTarget = GetBestTargetPart()
-							lockedUntil = now + (Settings.TargetStickTime or 0.35)
-						end
-					end
+		if Settings.AutoFarm then
+			-- 1. Selalu Noclip
+			enableNoclip()
+			UpdateCameraState()
 
-					-- 2. Attack
-					if lockedTarget and lockedTarget.Parent then
-						TweenToPart(lockedTarget)
+			local char, root = GetCharAndRoot()
+			local hum = GetHumanoid()
+
+			if root and hum and hum.Health > 0 then
+				local target = GetBestTargetPart()
+
+				if target then
+					-- Kalkulasi Posisi
+					local rockPos = target.Position
+					local standPos = rockPos + Vector3.new(0, Settings.YOffset, 0)
+					local lookCF = CFrame.lookAt(standPos, rockPos)
+					local dist = (root.Position - standPos).Magnitude
+
+					-- 2. Logika Gerak vs Diam
+					if dist > 3 then
+						-- MODE: TERBANG
+						root.Anchored = false
+						hum.PlatformStand = false 
 						
-						local m = lockedTarget:FindFirstAncestorOfClass("Model")
-						if m then
-							local hp = m:GetAttribute("Health") or 0
-							local owner = m:GetAttribute("LastHitPlayer")
-							
-							if hp <= 0 then
-								lockedTarget = nil
-								lockedUntil = 0 
-							elseif owner and owner ~= Players.LocalPlayer.Name then
-								lockedTarget = nil
-								lockedUntil = 0
-							else
-								-- PUKUL LANGSUNG
-								HitPickaxe()
-							end
+						-- Hitung durasi tween
+						local speed = Settings.TweenSpeed or 45
+						local info = TweenInfo.new(dist / speed, Enum.EasingStyle.Linear)
+						
+						-- Cek apakah perlu buat tween baru (biar gak spam object)
+						if not currentTween or currentTween.PlaybackState == Enum.PlaybackState.Completed then
+							currentTween = TweenService:Create(root, info, {CFrame = lookCF})
+							currentTween:Play()
+						else
+							-- Kalau target berubah drastis, cancel yg lama
+							currentTween:Cancel()
+							currentTween = TweenService:Create(root, info, {CFrame = lookCF})
+							currentTween:Play()
 						end
+						
+						-- Tunggu sebentar biar loop tidak spam CPU saat tween
+						task.wait(0.05)
+					else
+						-- MODE: POSISI TETAP (MINING)
+						if currentTween then currentTween:Cancel() currentTween = nil end
+						
+						-- Kunci Posisi secara Absolut
+						root.CFrame = lookCF
+						root.AssemblyLinearVelocity = Vector3.zero
+						root.AssemblyAngularVelocity = Vector3.zero
+						root.Anchored = true -- Sesuai perintah: Posisi Tetap
+						
+						-- Pukul
+						HitPickaxe()
+						
+						-- Delay Hit agar tidak terlalu cepat
+						task.wait(Settings.HitInterval)
 					end
+				else
+					-- Tidak ada target: Diam di tempat (atau unanchor bebas)
+					if currentTween then currentTween:Cancel() end
+					root.Anchored = false
 				end
-			else
-				StopLock()
-				StopCameraStateManager()
-				StopCameraStabilize()
-				disableNoclip()
 			end
-		end)
+		else
+			-- AutoFarm Mati
+			disableNoclip()
+			local _, r = GetCharAndRoot()
+			if r then r.Anchored = false end
+		end
 	end
-
-	StopLock()
-	StopCameraStateManager()
-	StopCameraStabilize()
-	disableNoclip()
 end)
 
-print("[✓] FORGE CORE: RESTORED ANCHOR + PLATFORMSTAND OFF")
+print("[✓] LOGIKA REVISI: FLY -> ANCHOR -> HIT")
