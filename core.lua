@@ -124,19 +124,18 @@ local function HitPickaxe()
 	local char = plr.Character
 	if not char then return end
 
-	-- [UBAH] FORCE ATTACH: Manipulasi Parent langsung (Bypass Animasi)
-	-- Ini membuat game "melihat" pickaxe ada di karakter seketika
 	local pickaxe = char:FindFirstChild("Pickaxe")
 	if not pickaxe then
 		local backpackPickaxe = plr.Backpack:FindFirstChild("Pickaxe")
 		if backpackPickaxe then
-			backpackPickaxe.Parent = char -- Pindah paksa ke karakter
+			backpackPickaxe.Parent = char
 		end
 	end
 	
-	-- Tembak Remote setelah Pickaxe dipastikan ada di Char
 	if CACHED_REMOTE then
-		CACHED_REMOTE:InvokeServer("Pickaxe")
+		pcall(function()
+			CACHED_REMOTE:InvokeServer("Pickaxe")
+		end)
 	end
 end
 
@@ -150,10 +149,12 @@ local function IsRockValid(rockModel)
 	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
 	local hpPercent = ((hp or maxHP)/maxHP)*100
 	
-	local anyR = false
-	for _, v in pairs(Settings.Rocks) do if v then anyR = true break end end
-	local anyO = false
-	for _, v in pairs(Settings.Ores) do if v then anyO = true break end end
+	-- [FIX] Cek apakah ada rock/ore yang dipilih
+	local anyRockSelected = false
+	for _, v in pairs(Settings.Rocks) do if v then anyRockSelected = true break end end
+	
+	local anyOreSelected = false
+	for _, v in pairs(Settings.Ores) do if v then anyOreSelected = true break end end
 
 	if hpPercent <= 45 then
 		if anyOreSelected then
@@ -232,23 +233,31 @@ task.spawn(function()
 						hum.PlatformStand = false 
 						
 						local speed = Settings.TweenSpeed or 45
-						local info = TweenInfo.new(dist / speed, Enum.EasingStyle.Linear)
+						-- [FIX] Clamp duration agar tidak terlalu kecil (minimum 0.1)
+						local duration = math.max(0.1, dist / speed)
+						local info = TweenInfo.new(duration, Enum.EasingStyle.Linear)
 						
 						if not currentTween or currentTween.PlaybackState == Enum.PlaybackState.Completed then
-							currentTween = TweenService:Create(root, info, {CFrame = lookCF})
-							currentTween:Play()
+							pcall(function()
+								currentTween = TweenService:Create(root, info, {CFrame = lookCF})
+								currentTween:Play()
+							end)
 						else
 							currentTween:Cancel()
-							currentTween = TweenService:Create(root, info, {CFrame = lookCF})
-							currentTween:Play()
+							pcall(function()
+								currentTween = TweenService:Create(root, info, {CFrame = lookCF})
+								currentTween:Play()
+							end)
 						end
 						
-						-- Force Tool Check saat terbang agar siap
 						HitPickaxe() 
 						task.wait(0.05)
 					else
 						-- ANCHOR & MINE
-						if currentTween then currentTween:Cancel() currentTween = nil end
+						if currentTween then 
+							currentTween:Cancel() 
+							currentTween = nil 
+						end
 						
 						root.CFrame = lookCF
 						root.AssemblyLinearVelocity = Vector3.zero
@@ -272,4 +281,4 @@ task.spawn(function()
 	end
 end)
 
-print("[✓] FIX: FORCE ATTACH PICKAXE (BYPASS EQUIP ANIMATION)")
+print("[✓] FIX: SCRIPT FARM STABLE (UNDEFINED VARIABLES & TWEEN DURATION FIXED)")
