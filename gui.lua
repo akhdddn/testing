@@ -1,9 +1,10 @@
--- ===== lprxsw - The Forge GUI (MAXIMIZED V3) =====
+-- ===== lprxsw - The Forge GUI (MAXIMIZED V4 - WITH DEBUG) =====
 --// Features:
 --// - Auto-Scale Layout (Fits any Mobile/PC screen)
 --// - Search Filter for Zones/Rocks/Ores
 --// - High Z-Index (Above Roblox Controls)
 --// - Drag Fix + Mobile Friendly Scroll
+--// - [NEW] Real-time Debug Panel + Log Viewer
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -15,18 +16,11 @@ local Workspace = game:GetService("Workspace")
 local cam = Workspace.CurrentCamera
 local vp = cam.ViewportSize
 
--- Cek apakah Mobile (Layar kecil atau Touch enabled)
 local IS_MOBILE = (vp.Y < 600) or (UserInputService.TouchEnabled and not UserInputService.MouseEnabled)
-
--- Ukuran GUI: 90% Lebar, 85% Tinggi (Agar tidak tertutup jempol)
 local TARGET_W = math.floor(vp.X * (IS_MOBILE and 0.9 or 0.6))
 local TARGET_H = math.floor(vp.Y * (IS_MOBILE and 0.85 or 0.6))
-
--- Header & Tab Size yang proporsional
 local TITLE_H = IS_MOBILE and 60 or 50
 local TAB_W = IS_MOBILE and math.floor(TARGET_W * 0.28) or 180
-
--- Font Multiplier (Sedikit dikecilkan jika layar sangat sempit agar teks muat)
 local FONT_MULT = IS_MOBILE and 1.8 or 1.5 
 local function FS(n) return math.floor(n * FONT_MULT + 0.5) end
 
@@ -55,12 +49,43 @@ ensureBranch(Settings, "Zones"); ensureBranch(Settings, "Rocks"); ensureBranch(S
 Settings.TweenSpeed = Settings.TweenSpeed or 40
 Settings.YOffset = Settings.YOffset or 2
 Settings.AutoFarm = Settings.AutoFarm or false
+Settings.HitInterval = Settings.HitInterval or 0.15
 
--- Sync Global
 ensureBranch(_G.Settings, "Zones"); ensureBranch(_G.Settings, "Rocks"); ensureBranch(_G.Settings, "Ores")
 _G.Settings.TweenSpeed = _G.Settings.TweenSpeed or Settings.TweenSpeed
 _G.Settings.YOffset = _G.Settings.YOffset or Settings.YOffset
 _G.Settings.AutoFarm = _G.Settings.AutoFarm or Settings.AutoFarm
+_G.Settings.HitInterval = _G.Settings.HitInterval or Settings.HitInterval
+
+--// [TAMBAH] DEBUG SYSTEM
+local DEBUG = {
+	Enabled = true,
+	Logs = {},
+	MaxLogs = 50,
+	LivePanel = nil,
+}
+
+local function DebugLog(tag, message, logType)
+	logType = logType or "INFO"
+	local timestamp = os.date("%H:%M:%S")
+	local logEntry = string.format("[%s] [%s] [%s] %s", timestamp, tag, logType, message)
+	
+	table.insert(DEBUG.Logs, logEntry)
+	if #DEBUG.Logs > DEBUG.MaxLogs then table.remove(DEBUG.Logs, 1) end
+	
+	print(logEntry)
+	
+	-- [UPDATE] Live panel if exists
+	if DEBUG.LivePanel then
+		UpdateDebugPanel()
+	end
+end
+
+local function UpdateDebugPanel()
+	-- Will be called when debug panel visible
+end
+
+_G.DebugLog = DebugLog
 
 --// State
 local scriptRunning = true
@@ -90,6 +115,10 @@ local THEME = {
 	Text = WHITE,
 	BoxOn = Color3.fromRGB(220, 50, 50),
 	BoxOff = Color3.fromRGB(50, 50, 50),
+	DebugBg = Color3.fromRGB(20, 20, 20),
+	DebugInfo = Color3.fromRGB(100, 150, 200),
+	DebugError = Color3.fromRGB(220, 80, 80),
+	DebugSuccess = Color3.fromRGB(80, 180, 80),
 }
 
 --// UI Helpers
@@ -121,7 +150,7 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "lprxsw_Forge_MAX_GUI"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
-gui.DisplayOrder = 999 -- [MAX] Always on Top
+gui.DisplayOrder = 999
 gui.Parent = playerGui
 
 local function stopScript()
@@ -132,13 +161,14 @@ local function stopScript()
 	Settings.AutoFarm = false
 	disconnectAll(tabConnections)
 	disconnectAll(globalConnections)
+	DebugLog("GUI", "Script stopped", "SUCCESS")
 	gui:Destroy()
 end
 
 --// MAIN FRAME
 local MainFrame = Instance.new("Frame")
 MainFrame.Size = UDim2.fromOffset(TARGET_W, TARGET_H)
-MainFrame.Position = UDim2.new(0.5, -TARGET_W/2, 0.5, -TARGET_H/2) -- Center
+MainFrame.Position = UDim2.new(0.5, -TARGET_W/2, 0.5, -TARGET_H/2)
 MainFrame.BackgroundColor3 = THEME.MainBg
 MainFrame.ClipsDescendants = true
 MainFrame.Parent = gui
@@ -197,12 +227,12 @@ local ContentScroll = Instance.new("ScrollingFrame")
 ContentScroll.Size = UDim2.new(1, -10, 1, -10)
 ContentScroll.Position = UDim2.new(0, 5, 0, 5)
 ContentScroll.BackgroundTransparency = 1
-ContentScroll.ScrollBarThickness = IS_MOBILE and 12 or 8 -- [MAX] Thicker scroll for mobile
+ContentScroll.ScrollBarThickness = IS_MOBILE and 12 or 8
 ContentScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 ContentScroll.Parent = ContentFrame
 Instance.new("UIPadding", ContentScroll).PaddingTop = UDim.new(0,10)
 Instance.new("UIPadding", ContentScroll).PaddingLeft = UDim.new(0,10)
-Instance.new("UIPadding", ContentScroll).PaddingRight = UDim.new(0,4) -- Space for scrollbar
+Instance.new("UIPadding", ContentScroll).PaddingRight = UDim.new(0,4)
 
 local ContentLayout = Instance.new("UIListLayout")
 ContentLayout.Padding = UDim.new(0, 10); ContentLayout.Parent = ContentScroll
@@ -231,7 +261,6 @@ local function update(input)
 end
 track(globalConnections, TitleBar.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-		-- Block drag if hitting buttons
 		if input.Position.X > MinimizeBtn.AbsolutePosition.X then return end
 		dragStart = input.Position; startPos = MainFrame.Position
 		input.Changed:Connect(function()
@@ -266,7 +295,6 @@ local function setTabSelected(btn)
 	curTabBtn = btn; btn.BackgroundColor3 = THEME.ButtonActive
 end
 
--- [MAX] Search Bar Logic
 local function createSearchBar(parent, onSearch)
 	local box = Instance.new("TextBox")
 	box.Size = UDim2.new(1, 0, 0, 35)
@@ -294,6 +322,7 @@ local function createCheckbox(parent, text, val, cb)
 	track(tabConnections, btn.Activated:Connect(function()
 		val = not val; btn.BackgroundColor3 = val and THEME.BoxOn or THEME.BoxOff
 		cb(val)
+		DebugLog("SETTINGS", "Toggled: "..text.." = "..tostring(val), "DEBUG")
 	end))
 	return row
 end
@@ -340,10 +369,8 @@ local function createCollapsible(title, list, setTable, setKey)
 	local cLay = Instance.new("UIListLayout"); cLay.Parent=content; cLay.Padding=UDim.new(0,5)
 	Instance.new("UIPadding", content).PaddingTop=UDim.new(0,10); Instance.new("UIPadding", content).PaddingLeft=UDim.new(0,10)
 	
-	-- [MAX] Search Filter Support
-	local allItems = {} -- Store GUI elements for filtering
+	local allItems = {}
 	
-	-- Search Bar inside collapsible
 	local searchRow = Instance.new("Frame"); searchRow.Size=UDim2.new(1,-20,0,35); searchRow.BackgroundTransparency=1; searchRow.Parent=content
 	createSearchBar(searchRow, function(text)
 		text = text:lower()
@@ -355,7 +382,6 @@ local function createCollapsible(title, list, setTable, setKey)
 				row.Visible = false
 			end
 		end
-		-- Auto-resize content frame based on filtered results
 		if content.Visible then
 			content.Size = UDim2.new(1,0,0, cLay.AbsoluteContentSize.Y + 20)
 		end
@@ -371,6 +397,7 @@ local function createCollapsible(title, list, setTable, setKey)
 		track(tabConnections, btn.Activated:Connect(function()
 			isActive = not isActive; btn.BackgroundColor3 = isActive and THEME.BoxOn or THEME.BoxOff
 			setTable[name] = isActive; _G.Settings[setKey][name] = isActive
+			DebugLog("SELECT", setKey..": "..name.." = "..tostring(isActive), "DEBUG")
 		end))
 		
 		allItems[name] = row
@@ -389,11 +416,160 @@ local function createCollapsible(title, list, setTable, setKey)
 	end))
 end
 
+-- [TAMBAH] DEBUG PANEL
+local function buildDebug()
+	clearContent()
+	
+	-- [TAMBAH] Status Header
+	local statusHolder = Instance.new("Frame")
+	statusHolder.AutomaticSize = Enum.AutomaticSize.Y
+	statusHolder.Size = UDim2.new(1, 0, 0, 0)
+	statusHolder.BackgroundTransparency = 1
+	statusHolder.Parent = ContentScroll
+	
+	local statusLay = Instance.new("UIListLayout")
+	statusLay.Parent = statusHolder
+	statusLay.Padding = UDim.new(0, 5)
+	
+	-- Real-time status rows
+	local function createStatusRow(label)
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 30)
+		row.BackgroundColor3 = THEME.Holder
+		row.Parent = statusHolder
+		uiCorner(row, 6)
+		
+		local lbl = mkLabel(row, label, 11, false)
+		lbl.Size = UDim2.new(1, -10, 1, 0)
+		lbl.Position = UDim2.new(0, 5, 0, 0)
+		
+		return lbl
+	end
+	
+	local lblAutoFarm = createStatusRow("AutoFarm: OFF")
+	local lblTarget = createStatusRow("Target: None")
+	local lblHP = createStatusRow("Target HP: --")
+	local lblHits = createStatusRow("Hits: 0")
+	local lblDist = createStatusRow("Distance: --")
+	
+	-- [TAMBAH] Real-time update every frame
+	local debugConn = RunService.RenderStepped:Connect(function()
+		if not scriptRunning or minimized then return end
+		
+		lblAutoFarm.Text = "AutoFarm: "..(Settings.AutoFarm and "ON ✓" or "OFF")
+		
+		local char = player.Character
+		if char and Settings.AutoFarm then
+			local root = char:FindFirstChild("HumanoidRootPart")
+			if root then
+				-- Try to find target
+				local rocksFolder = Workspace:FindFirstChild("Rocks")
+				if rocksFolder then
+					local closest = nil
+					local minDist = math.huge
+					
+					for _, zone in ipairs(rocksFolder:GetChildren()) do
+						if zone:IsA("Folder") then
+							for _, inst in ipairs(zone:GetDescendants()) do
+								if inst:IsA("Model") and inst.Parent.Name ~= "Rock" then
+									local p = inst.PrimaryPart or inst:FindFirstChild("Hitbox")
+									if p then
+										local hp = inst:GetAttribute("Health") or 100
+										if hp > 0 then
+											local d = (root.Position - p.Position).Magnitude
+											if d < minDist then
+												minDist = d
+												closest = inst
+											end
+										end
+									end
+								end
+							end
+						end
+					end
+					
+					if closest then
+						lblTarget.Text = "Target: "..closest.Name
+						lblHP.Text = "Target HP: "..(closest:GetAttribute("Health") or "?").."/"..( closest:GetAttribute("MaxHealth") or "100")
+						lblDist.Text = "Distance: "..string.format("%.1f", minDist)
+					else
+						lblTarget.Text = "Target: None"
+						lblHP.Text = "Target HP: --"
+						lblDist.Text = "Distance: --"
+					end
+				end
+			end
+		else
+			lblTarget.Text = "Target: None"
+			lblHP.Text = "Target HP: --"
+			lblDist.Text = "Distance: --"
+		end
+	end)
+	
+	table.insert(tabConnections, debugConn)
+	
+	-- [TAMBAH] Log Viewer
+	local logHolder = Instance.new("Frame")
+	logHolder.Size = UDim2.new(1, 0, 0, 200)
+	logHolder.BackgroundColor3 = THEME.DebugBg
+	logHolder.Parent = ContentScroll
+	uiCorner(logHolder, 8)
+	
+	local logScroll = Instance.new("ScrollingFrame")
+	logScroll.Size = UDim2.new(1, -10, 1, -10)
+	logScroll.Position = UDim2.new(0, 5, 0, 5)
+	logScroll.BackgroundTransparency = 1
+	logScroll.ScrollBarThickness = 6
+	logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	logScroll.Parent = logHolder
+	
+	local logLay = Instance.new("UIListLayout")
+	logLay.Padding = UDim.new(0, 2)
+	logLay.Parent = logScroll
+	
+	local logLabel = Instance.new("TextLabel")
+	logLabel.Size = UDim2.new(1, 0, 0, 0)
+	logLabel.AutomaticSize = Enum.AutomaticSize.Y
+	logLabel.BackgroundTransparency = 1
+	logLabel.Font = Enum.Font.Courier
+	logLabel.TextSize = FS(10)
+	logLabel.TextColor3 = THEME.Text
+	logLabel.TextXAlignment = Enum.TextXAlignment.Left
+	logLabel.TextYAlignment = Enum.TextYAlignment.Top
+	logLabel.TextWrapped = true
+	logLabel.Parent = logScroll
+	
+	-- Update log display
+	UpdateDebugPanel = function()
+		local logText = ""
+		for i = math.max(1, #DEBUG.Logs - 20), #DEBUG.Logs do
+			logText = logText .. DEBUG.Logs[i] .. "\n"
+		end
+		logLabel.Text = logText
+		logScroll.CanvasPosition = Vector2.new(0, logScroll.AbsoluteCanvasSize.Y)
+	end
+	
+	-- [TAMBAH] Clear logs button
+	local clearBtn = mkButton(ContentScroll, "Clear Logs", 12)
+	clearBtn.Size = UDim2.new(1, 0, 0, 40)
+	clearBtn.BackgroundColor3 = THEME.Header
+	uiCorner(clearBtn, 6)
+	
+	track(tabConnections, clearBtn.Activated:Connect(function()
+		table.clear(DEBUG.Logs)
+		logLabel.Text = ""
+		DebugLog("DEBUG", "Logs cleared", "SUCCESS")
+	end))
+	
+	DebugLog("DEBUG", "Debug panel opened", "SUCCESS")
+end
+
 --// TABS BUILDER
 local function buildAuto()
 	clearContent()
 	createCheckbox(ContentScroll, "Enable Auto Mining", Settings.AutoFarm, function(v)
 		Settings.AutoFarm = v; _G.Settings.AutoFarm = v
+		DebugLog("AUTO", "AutoFarm toggled: "..tostring(v), "DEBUG")
 	end)
 	createCollapsible("Zones ("..#DATA.Zones..")", DATA.Zones, Settings.Zones, "Zones")
 	createCollapsible("Rocks ("..#DATA.Rocks..")", DATA.Rocks, Settings.Rocks, "Rocks")
@@ -404,20 +580,30 @@ local function buildSettings()
 	clearContent()
 	createSlider(ContentScroll, "Tween Speed", 20, 100, Settings.TweenSpeed, function(v)
 		Settings.TweenSpeed = v; _G.Settings.TweenSpeed = v
+		DebugLog("SETTINGS", "TweenSpeed changed to "..v, "DEBUG")
 	end)
 	createSlider(ContentScroll, "Y Offset (Height)", -10, 10, Settings.YOffset, function(v)
 		Settings.YOffset = v; _G.Settings.YOffset = v
+		DebugLog("SETTINGS", "YOffset changed to "..v, "DEBUG")
+	end)
+	createSlider(ContentScroll, "Hit Interval", 0.05, 1.0, Settings.HitInterval, function(v)
+		Settings.HitInterval = math.floor(v*100)/100
+		_G.Settings.HitInterval = Settings.HitInterval
+		DebugLog("SETTINGS", "HitInterval changed to "..Settings.HitInterval, "DEBUG")
 	end)
 end
 
 --// INIT
 local bAuto = createTabButton("Auto Farm")
 local bSet = createTabButton("Settings")
+local bDebug = createTabButton("Debug")
 
 track(globalConnections, bAuto.Activated:Connect(function() setTabSelected(bAuto); buildAuto() end))
 track(globalConnections, bSet.Activated:Connect(function() setTabSelected(bSet); buildSettings() end))
+track(globalConnections, bDebug.Activated:Connect(function() setTabSelected(bDebug); buildDebug() end))
 
 setTabSelected(bAuto)
 buildAuto()
 
-print("[✓] MAXIMIZED GUI Loaded (Mobile Optimized + Search)")
+DebugLog("STARTUP", "GUI v4 Loaded with Debug System", "SUCCESS")
+print("[✓] MAXIMIZED GUI v4 Loaded (With Debug Panel)")
