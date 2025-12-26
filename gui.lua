@@ -1,674 +1,662 @@
---// THE FORGE - Manual Instance GUI (Template, safe callbacks)
---// Theme: black + red, batik fire/iron vibe (image tinted)
---// Controls: Tabs, drawers + checkboxes, sliders, drag, minimize (L), close
+-- ===== lprxsw - The Forge GUI (FONT 2X + SLIDER FIX + DRAG REGION SMALL) =====
+-- LocalScript
 
+--// Services
 local Players = game:GetService("Players")
-local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 
-local LP = Players.LocalPlayer
-local PG = LP:WaitForChild("PlayerGui")
+--// Config
+local FONT_MULT = 2 -- sebelumnya 4 (jadi 2x lebih kecil)
+local function FS(n) return math.floor(n * FONT_MULT + 0.5) end
 
--- =========================================================
---  CONFIG / INTEGRATION POINTS (bind these from your own code)
--- =========================================================
-local Callbacks = {
-	OnAutoMiningChanged = function(on) end,               -- (boolean)
-	OnFilterChanged = function(category, name, value) end, -- category: "Zones"/"Rocks"/"Ores"
-	OnTweenSpeedChanged = function(v) end,               -- number 20..80
-	OnYOffsetChanged = function(v) end,                  -- number -7..7
-	OnClose = function()
-		-- e.g. stop systems, restore character state, disconnect loops, etc.
+-- Layout (biarkan sama; font lebih kecil akan jadi lebih lega)
+local MAIN_W, MAIN_H = 980, 680
+local TITLE_H = 120
+local TAB_W = 240
+
+--// Player
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+--// Wait globals
+local function waitForGlobals(timeoutSec)
+	local t0 = os.clock()
+	while os.clock() - t0 < timeoutSec do
+		if _G.DATA and _G.Settings then
+			return _G.DATA, _G.Settings
+		end
+		task.wait(0.1)
 	end
+	return nil, nil
+end
+
+local DATA, Settings = waitForGlobals(10)
+if not DATA or not Settings then
+	warn("[x] _G.DATA / _G.Settings tidak ter-load (timeout). GUI dibatalkan.")
+	return
+end
+
+--// Ensure settings branches
+local function ensureBranch(root, key)
+	root[key] = root[key] or {}
+	return root[key]
+end
+
+ensureBranch(Settings, "Zones")
+ensureBranch(Settings, "Rocks")
+ensureBranch(Settings, "Ores")
+Settings.TweenSpeed = Settings.TweenSpeed or 40
+Settings.YOffset = Settings.YOffset or 2
+Settings.AutoFarm = Settings.AutoFarm or false
+
+ensureBranch(_G.Settings, "Zones")
+ensureBranch(_G.Settings, "Rocks")
+ensureBranch(_G.Settings, "Ores")
+_G.Settings.TweenSpeed = _G.Settings.TweenSpeed or Settings.TweenSpeed
+_G.Settings.YOffset = _G.Settings.YOffset or Settings.YOffset
+_G.Settings.AutoFarm = _G.Settings.AutoFarm or Settings.AutoFarm
+
+--// State
+local scriptRunning = true
+local minimized = false
+
+--// Connection manager
+local globalConnections = {}
+local tabConnections = {}
+
+local function track(scope, conn)
+	table.insert(scope, conn)
+	return conn
+end
+
+local function disconnectAll(scope)
+	for _, c in ipairs(scope) do
+		if c and c.Connected then
+			c:Disconnect()
+		end
+	end
+	table.clear(scope)
+end
+
+--// Theme (all fonts white)
+local WHITE = Color3.fromRGB(255, 255, 255)
+local THEME = {
+	MainBg = Color3.fromRGB(15, 15, 15),
+	PanelBg = Color3.fromRGB(20, 20, 20),
+	ContentBg = Color3.fromRGB(10, 10, 10),
+	TitleBg = Color3.fromRGB(40, 0, 0),
+	Accent = Color3.fromRGB(200, 40, 40),
+
+	Button = Color3.fromRGB(35, 0, 0),
+	ButtonHover = Color3.fromRGB(70, 30, 30),
+	ButtonActive = Color3.fromRGB(70, 10, 10),
+
+	Header = Color3.fromRGB(50, 10, 10),
+	Holder = Color3.fromRGB(25, 25, 25),
+
+	Text = WHITE,
+	BoxOn = Color3.fromRGB(200, 40, 40),
+	BoxOff = Color3.fromRGB(40, 40, 40),
 }
 
--- Optional: if you are building this for your OWN experience/tool system, you can set these:
--- Callbacks.OnAutoMiningChanged = function(on) YourSystem:SetEnabled(on) end
-
--- =========================================================
---  THEME
--- =========================================================
-local C_BLACK = Color3.fromRGB(10, 10, 10)
-local C_BLACK2 = Color3.fromRGB(18, 18, 18)
-local C_RED = Color3.fromRGB(200, 0, 0)
-local C_RED2 = Color3.fromRGB(120, 0, 0)
-local C_TEXT = Color3.fromRGB(255, 235, 235)
-
-local BATIK_IMAGE_ID = "rbxassetid://0" -- TODO: replace with your batik image asset id
-
--- =========================================================
---  HELPERS
--- =========================================================
-local function mk(className, props)
-	local inst = Instance.new(className)
-	for k, v in pairs(props or {}) do
-		inst[k] = v
-	end
-	return inst
+--// UI helpers
+local function uiCorner(parent, radius)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, radius)
+	c.Parent = parent
+	return c
 end
 
-local function addCorner(parent, r)
-	mk("UICorner", {CornerRadius = UDim.new(0, r or 10), Parent = parent})
+local function mkLabel(parent, text, baseSize, bold)
+	local lb = Instance.new("TextLabel")
+	lb.BackgroundTransparency = 1
+	lb.Text = text
+	lb.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+	lb.TextSize = FS(baseSize)
+	lb.TextColor3 = THEME.Text
+	lb.TextWrapped = true
+	lb.TextXAlignment = Enum.TextXAlignment.Left
+	lb.Parent = parent
+	return lb
 end
 
-local function addStroke(parent, thickness, color, transparency)
-	mk("UIStroke", {
-		Thickness = thickness or 1,
-		Color = color or C_RED,
-		Transparency = transparency or 0,
-		Parent = parent
-	})
-end
-
-local function addPadding(parent, p)
-	mk("UIPadding", {
-		PaddingTop = UDim.new(0, p),
-		PaddingBottom = UDim.new(0, p),
-		PaddingLeft = UDim.new(0, p),
-		PaddingRight = UDim.new(0, p),
-		Parent = parent
-	})
-end
-
-local function addList(parent, pad)
-	local layout = mk("UIListLayout", {
-		FillDirection = Enum.FillDirection.Vertical,
-		SortOrder = Enum.SortOrder.LayoutOrder,
-		Padding = UDim.new(0, pad or 8),
-		Parent = parent
-	})
-	return layout
-end
-
-local function setTextStyle(lbl)
-	lbl.Font = Enum.Font.Gotham
-	lbl.TextColor3 = C_TEXT
-	lbl.TextSize = 14
-	lbl.TextXAlignment = Enum.TextXAlignment.Left
-	lbl.BackgroundTransparency = 1
-end
-
-local function clamp(n, a, b)
-	return math.max(a, math.min(b, n))
-end
-
-local function round(n)
-	if n >= 0 then return math.floor(n + 0.5) end
-	return math.ceil(n - 0.5)
-end
-
--- =========================================================
---  BUILD UI
--- =========================================================
--- Clean old
-local old = PG:FindFirstChild("TheForgeUI")
-if old then old:Destroy() end
-
-local ScreenGui = mk("ScreenGui", {
-	Name = "TheForgeUI",
-	ResetOnSpawn = false,
-	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-	Parent = PG
-})
-
-local Main = mk("Frame", {
-	Name = "Main",
-	Size = UDim2.fromOffset(640, 420),
-	Position = UDim2.new(0.5, -320, 0.5, -210),
-	BackgroundColor3 = C_BLACK,
-	BorderSizePixel = 0,
-	Parent = ScreenGui
-})
-addCorner(Main, 14)
-addStroke(Main, 2, C_RED, 0.15)
-
--- Batik background layer (tinted red)
-local Batik = mk("ImageLabel", {
-	Name = "Batik",
-	BackgroundTransparency = 1,
-	Size = UDim2.fromScale(1, 1),
-	Image = BATIK_IMAGE_ID,
-	ImageColor3 = C_RED,
-	ImageTransparency = 0.75,
-	ScaleType = Enum.ScaleType.Tile,
-	TileSize = UDim2.fromOffset(180, 180),
-	Parent = Main
-})
-addCorner(Batik, 14)
-
--- Dark overlay (iron feel)
-local Overlay = mk("Frame", {
-	Name = "Overlay",
-	BackgroundColor3 = C_BLACK,
-	BackgroundTransparency = 0.15,
-	Size = UDim2.fromScale(1, 1),
-	BorderSizePixel = 0,
-	Parent = Main
-})
-addCorner(Overlay, 14)
-
--- TopBar (drag handle)
-local TopBar = mk("Frame", {
-	Name = "TopBar",
-	Size = UDim2.new(1, 0, 0, 44),
-	BackgroundColor3 = C_BLACK2,
-	BackgroundTransparency = 0.05,
-	BorderSizePixel = 0,
-	Parent = Main
-})
-addCorner(TopBar, 14)
-addStroke(TopBar, 1, C_RED2, 0.2)
-
-local Title = mk("TextLabel", {
-	Name = "Title",
-	Text = "THE FORGE  |  Api & Besi",
-	Size = UDim2.new(1, -160, 1, 0),
-	Position = UDim2.fromOffset(14, 0),
-	Parent = TopBar
-})
-setTextStyle(Title)
-Title.TextSize = 15
-
-local Hint = mk("TextLabel", {
-	Name = "Hint",
-	Text = "Minimize: [L]",
-	Size = UDim2.fromOffset(120, 44),
-	AnchorPoint = Vector2.new(1, 0),
-	Position = UDim2.new(1, -84, 0, 0),
-	Parent = TopBar
-})
-setTextStyle(Hint)
-Hint.TextXAlignment = Enum.TextXAlignment.Right
-Hint.TextTransparency = 0.15
-Hint.TextSize = 12
-
-local BtnMin = mk("TextButton", {
-	Name = "MinimizeBtn",
-	Text = "_",
-	Size = UDim2.fromOffset(36, 28),
-	Position = UDim2.new(1, -76, 0, 8),
-	BackgroundColor3 = C_BLACK,
-	BorderSizePixel = 0,
-	Parent = TopBar,
-	AutoButtonColor = false
-})
-addCorner(BtnMin, 8)
-addStroke(BtnMin, 1, C_RED2, 0.25)
-
-local BtnClose = mk("TextButton", {
-	Name = "CloseBtn",
-	Text = "X",
-	Size = UDim2.fromOffset(36, 28),
-	Position = UDim2.new(1, -36, 0, 8),
-	BackgroundColor3 = C_RED2,
-	BorderSizePixel = 0,
-	Parent = TopBar,
-	AutoButtonColor = false
-})
-addCorner(BtnClose, 8)
-addStroke(BtnClose, 1, C_RED, 0.2)
-
-local Body = mk("Frame", {
-	Name = "Body",
-	BackgroundTransparency = 1,
-	Size = UDim2.new(1, -16, 1, -60),
-	Position = UDim2.fromOffset(8, 52),
-	Parent = Main
-})
-
--- Left tab bar
-local TabsBar = mk("Frame", {
-	Name = "TabsBar",
-	BackgroundColor3 = C_BLACK2,
-	BackgroundTransparency = 0.1,
-	BorderSizePixel = 0,
-	Size = UDim2.fromOffset(160, 1),
-	Parent = Body
-})
-TabsBar.Size = UDim2.new(0, 160, 1, 0)
-addCorner(TabsBar, 12)
-addStroke(TabsBar, 1, C_RED2, 0.25)
-addPadding(TabsBar, 10)
-addList(TabsBar, 10)
-
-local function makeTabButton(text)
-	local b = mk("TextButton", {
-		Text = text,
-		Size = UDim2.new(1, 0, 0, 40),
-		BackgroundColor3 = C_BLACK,
-		BorderSizePixel = 0,
-		AutoButtonColor = false,
-		Parent = TabsBar
-	})
-	addCorner(b, 10)
-	addStroke(b, 1, C_RED2, 0.35)
-	local t = mk("TextLabel", {Text = text, Size = UDim2.new(1, -16, 1, 0), Position = UDim2.fromOffset(12, 0), Parent = b})
-	setTextStyle(t)
-	t.TextSize = 14
+local function mkButton(parent, text, baseSize)
+	local b = Instance.new("TextButton")
+	b.AutoButtonColor = false
+	b.Text = text
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = FS(baseSize)
+	b.TextColor3 = THEME.Text
+	b.TextWrapped = true
+	b.BackgroundColor3 = THEME.Button
+	b.Parent = parent
 	return b
 end
 
-local TabBtnAuto = makeTabButton("Auto Mining")
-local TabBtnSettings = makeTabButton("Setting")
+--// GUI root
+local gui = Instance.new("ScreenGui")
+gui.Name = "lprxsw_TheForge_GUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = playerGui
 
--- Right content area
-local Content = mk("Frame", {
-	Name = "Content",
-	BackgroundColor3 = C_BLACK2,
-	BackgroundTransparency = 0.12,
-	BorderSizePixel = 0,
-	Size = UDim2.new(1, -170, 1, 0),
-	Position = UDim2.fromOffset(170, 0),
-	Parent = Body
-})
-addCorner(Content, 12)
-addStroke(Content, 1, C_RED2, 0.25)
+--// Stop/Cleanup
+local function stopScript()
+	if not scriptRunning then return end
+	scriptRunning = false
 
-local AutoTab = mk("Frame", {Name="AutoTab", BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Parent=Content})
-local SetTab  = mk("Frame", {Name="SetTab",  BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Parent=Content})
-SetTab.Visible = false
+	if _G.FarmLoop ~= nil then _G.FarmLoop = false end
+	if _G.Settings then _G.Settings.AutoFarm = false end
+	Settings.AutoFarm = false
 
--- Tab button state
-local function setActiveTab(which)
-	AutoTab.Visible = (which == "auto")
-	SetTab.Visible = (which == "set")
+	disconnectAll(tabConnections)
+	disconnectAll(globalConnections)
 
-	TabBtnAuto.BackgroundColor3 = (which == "auto") and C_RED2 or C_BLACK
-	TabBtnSettings.BackgroundColor3 = (which == "set") and C_RED2 or C_BLACK
+	gui:Destroy()
+	print("[✓] Script stopped and cleaned up completely!")
 end
-setActiveTab("auto")
 
-TabBtnAuto.MouseButton1Click:Connect(function() setActiveTab("auto") end)
-TabBtnSettings.MouseButton1Click:Connect(function() setActiveTab("set") end)
+--// Main frame
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.fromOffset(MAIN_W, MAIN_H)
+MainFrame.Position = UDim2.new(0.5, -MAIN_W/2, 0.5, -MAIN_H/2)
+MainFrame.BackgroundColor3 = THEME.MainBg
+MainFrame.BorderSizePixel = 0
+MainFrame.ClipsDescendants = true
+MainFrame.Parent = gui
+uiCorner(MainFrame, 10)
 
--- =========================================================
---  DRAGGING (TopBar only)
--- =========================================================
+local Stroke = Instance.new("UIStroke")
+Stroke.Color = THEME.Accent
+Stroke.Thickness = 2
+Stroke.Parent = MainFrame
+
+--// Title bar
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, TITLE_H)
+TitleBar.BackgroundColor3 = THEME.TitleBg
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = MainFrame
+
+local TitleLabel = mkLabel(TitleBar, "lprxsw-The Forge", 20, true)
+TitleLabel.Size = UDim2.new(1, -260, 1, 0)
+TitleLabel.Position = UDim2.new(0, 16, 0, 0)
+
+local MinimizeBtn = mkButton(TitleBar, "−", 18)
+MinimizeBtn.Size = UDim2.fromOffset(90, TITLE_H)
+MinimizeBtn.Position = UDim2.new(1, -180, 0, 0)
+MinimizeBtn.BackgroundColor3 = Color3.fromRGB(50, 20, 20)
+uiCorner(MinimizeBtn, 8)
+
+local CloseBtn = mkButton(TitleBar, "×", 22)
+CloseBtn.Size = UDim2.fromOffset(90, TITLE_H)
+CloseBtn.Position = UDim2.new(1, -90, 0, 0)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(150, 20, 20)
+uiCorner(CloseBtn, 8)
+
+-- Hover effects
+local function hover(btn, normal, over)
+	track(globalConnections, btn.MouseEnter:Connect(function()
+		if not scriptRunning then return end
+		btn.BackgroundColor3 = over
+	end))
+	track(globalConnections, btn.MouseLeave:Connect(function()
+		if not scriptRunning then return end
+		btn.BackgroundColor3 = normal
+	end))
+end
+hover(MinimizeBtn, Color3.fromRGB(50, 20, 20), THEME.ButtonHover)
+hover(CloseBtn, Color3.fromRGB(150, 20, 20), Color3.fromRGB(200, 30, 30))
+
+--// Panels
+local TabFrame = Instance.new("Frame")
+TabFrame.Size = UDim2.new(0, TAB_W, 1, -TITLE_H)
+TabFrame.Position = UDim2.new(0, 0, 0, TITLE_H)
+TabFrame.BackgroundColor3 = THEME.PanelBg
+TabFrame.BorderSizePixel = 0
+TabFrame.Parent = MainFrame
+
+local TabPad = Instance.new("UIPadding")
+TabPad.PaddingTop = UDim.new(0, 14)
+TabPad.PaddingLeft = UDim.new(0, 12)
+TabPad.PaddingRight = UDim.new(0, 12)
+TabPad.Parent = TabFrame
+
+local TabLayout = Instance.new("UIListLayout")
+TabLayout.FillDirection = Enum.FillDirection.Vertical
+TabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+TabLayout.Padding = UDim.new(0, 12)
+TabLayout.Parent = TabFrame
+
+local ContentFrame = Instance.new("Frame")
+ContentFrame.Size = UDim2.new(1, -TAB_W, 1, -TITLE_H)
+ContentFrame.Position = UDim2.new(0, TAB_W, 0, TITLE_H)
+ContentFrame.BackgroundColor3 = THEME.ContentBg
+ContentFrame.BorderSizePixel = 0
+ContentFrame.Parent = MainFrame
+
+local ContentScroll = Instance.new("ScrollingFrame")
+ContentScroll.Size = UDim2.new(1, -10, 1, -10)
+ContentScroll.Position = UDim2.new(0, 5, 0, 5)
+ContentScroll.BackgroundTransparency = 1
+ContentScroll.ScrollBarThickness = 10
+ContentScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+ContentScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ContentScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+ContentScroll.Parent = ContentFrame
+
+local ContentPadding = Instance.new("UIPadding")
+ContentPadding.PaddingTop = UDim.new(0, 14)
+ContentPadding.PaddingBottom = UDim.new(0, 14)
+ContentPadding.PaddingLeft = UDim.new(0, 14)
+ContentPadding.PaddingRight = UDim.new(0, 14)
+ContentPadding.Parent = ContentScroll
+
+local ContentLayout = Instance.new("UIListLayout")
+ContentLayout.FillDirection = Enum.FillDirection.Vertical
+ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ContentLayout.Padding = UDim.new(0, 16)
+ContentLayout.Parent = ContentScroll
+
+--// Minimize/Restore
+local function applyMinimizeState()
+	if minimized then
+		TabFrame.Visible = false
+		ContentFrame.Visible = false
+		MainFrame:TweenSize(UDim2.fromOffset(380, TITLE_H), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.22, true)
+		MinimizeBtn.Text = "□"
+	else
+		MainFrame:TweenSize(UDim2.fromOffset(MAIN_W, MAIN_H), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.22, true)
+		MinimizeBtn.Text = "−"
+		task.delay(0.22, function()
+			if scriptRunning and not minimized then
+				TabFrame.Visible = true
+				ContentFrame.Visible = true
+			end
+		end)
+	end
+end
+
+local function toggleMinimize()
+	if not scriptRunning then return end
+	minimized = not minimized
+	applyMinimizeState()
+end
+
+track(globalConnections, CloseBtn.Activated:Connect(stopScript))
+track(globalConnections, MinimizeBtn.Activated:Connect(toggleMinimize))
+track(globalConnections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if not scriptRunning then return end
+	if input.KeyCode == Enum.KeyCode.L then
+		toggleMinimize()
+	end
+end))
+
+--// DRAG (FIX): manual title-only drag, region diperkecil (no UIDragDetector)
 do
-	local dragging = false
-	local dragStart, startPos
-	local dragInput
+	-- Lebar area drag (hanya sisi kiri TitleBar)
+	local DRAG_W = 420 -- kecilkan lagi kalau mau area drag lebih sempit
 
-	local function update(input)
-		local delta = input.Position - dragStart
-		Main.Position = UDim2.new(
-			startPos.X.Scale, startPos.X.Offset + delta.X,
-			startPos.Y.Scale, startPos.Y.Offset + delta.Y
+	local DragHandle = Instance.new("TextButton")
+	DragHandle.Name = "DragHandle"
+	DragHandle.BackgroundTransparency = 1
+	DragHandle.Text = ""
+	DragHandle.AutoButtonColor = false
+	DragHandle.Size = UDim2.new(0, DRAG_W, 1, 0)
+	DragHandle.Position = UDim2.new(0, 0, 0, 0)
+	DragHandle.ZIndex = 50
+	DragHandle.Parent = TitleBar
+
+	MinimizeBtn.ZIndex = 100
+	CloseBtn.ZIndex = 100
+	TitleLabel.ZIndex = 60
+
+	MainFrame.Active = true
+	TitleBar.Active = true
+	DragHandle.Active = true
+
+	local dragging = false
+	local dragStartPos = nil
+	local frameStartPos = nil
+	local dragInput = nil
+
+	local function updateDrag(input)
+		if not dragging or not dragStartPos or not frameStartPos then return end
+		local delta = input.Position - dragStartPos
+		MainFrame.Position = UDim2.new(
+			frameStartPos.X.Scale, frameStartPos.X.Offset + delta.X,
+			frameStartPos.Y.Scale, frameStartPos.Y.Offset + delta.Y
 		)
 	end
 
-	TopBar.InputBegan:Connect(function(input)
+	track(globalConnections, DragHandle.InputBegan:Connect(function(input)
+		if not scriptRunning then return end
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
-			dragStart = input.Position
-			startPos = Main.Position
-			input.Changed:Connect(function()
-				if input.UserInputState == Enum.UserInputState.End then
-					dragging = false
-				end
-			end)
-		end
-	end)
-
-	TopBar.InputChanged:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
 			dragInput = input
+			dragStartPos = input.Position
+			frameStartPos = MainFrame.Position
 		end
-	end)
+	end))
 
-	UIS.InputChanged:Connect(function(input)
-		if input == dragInput and dragging then
-			update(input)
+	track(globalConnections, UserInputService.InputChanged:Connect(function(input)
+		if input == dragInput and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			updateDrag(input)
 		end
-	end)
-end
+	end))
 
--- =========================================================
---  MINIMIZE / CLOSE
--- =========================================================
-local minimized = false
-local fullSize = Main.Size
-local function applyMinimize(state)
-	minimized = state
-	if minimized then
-		Body.Visible = false
-		Main.Size = UDim2.fromOffset(fullSize.X.Offset, 44)
-	else
-		Body.Visible = true
-		Main.Size = fullSize
-	end
-end
-
-BtnMin.MouseButton1Click:Connect(function()
-	applyMinimize(not minimized)
-end)
-
-UIS.InputBegan:Connect(function(input, gp)
-	if gp then return end
-	if input.KeyCode == Enum.KeyCode.L then
-		applyMinimize(not minimized)
-	end
-end)
-
-local function doClose()
-	pcall(function() Callbacks.OnClose() end)
-	ScreenGui:Destroy()
-end
-
-BtnClose.MouseButton1Click:Connect(doClose)
-
--- =========================================================
---  AUTO MINING TAB CONTENT
--- =========================================================
-addPadding(AutoTab, 12)
-addList(AutoTab, 10)
-
-local function headerLabel(parent, text)
-	local lbl = mk("TextLabel", {Text = text, Size = UDim2.new(1, 0, 0, 22), Parent = parent})
-	setTextStyle(lbl)
-	lbl.TextSize = 15
-	return lbl
-end
-
-headerLabel(AutoTab, "Control")
-
-local ToggleRow = mk("Frame", {BackgroundTransparency=1, Size=UDim2.new(1,0,0,44), Parent=AutoTab})
-local ToggleBtn = mk("TextButton", {
-	Text = "",
-	Size = UDim2.fromOffset(64, 28),
-	Position = UDim2.fromOffset(0, 8),
-	BackgroundColor3 = C_BLACK,
-	BorderSizePixel = 0,
-	AutoButtonColor = false,
-	Parent = ToggleRow
-})
-addCorner(ToggleBtn, 14)
-addStroke(ToggleBtn, 1, C_RED2, 0.15)
-
-local ToggleKnob = mk("Frame", {
-	Size = UDim2.fromOffset(24, 24),
-	Position = UDim2.fromOffset(2, 2),
-	BackgroundColor3 = C_RED2,
-	BorderSizePixel = 0,
-	Parent = ToggleBtn
-})
-addCorner(ToggleKnob, 12)
-
-local ToggleText = mk("TextLabel", {
-	Text = "Auto Mining: OFF",
-	Size = UDim2.new(1, -80, 1, 0),
-	Position = UDim2.fromOffset(80, 0),
-	Parent = ToggleRow
-})
-setTextStyle(ToggleText)
-ToggleText.TextSize = 14
-
-local autoOn = false
-local function setToggle(v)
-	autoOn = v and true or false
-	ToggleText.Text = autoOn and "Auto Mining: ON" or "Auto Mining: OFF"
-
-	local goal = autoOn and UDim2.fromOffset(38, 2) or UDim2.fromOffset(2, 2)
-	local color = autoOn and C_RED or C_RED2
-
-	TweenService:Create(ToggleKnob, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = goal, BackgroundColor3 = color}):Play()
-	TweenService:Create(ToggleBtn, TweenInfo.new(0.15), {BackgroundColor3 = autoOn and C_RED2 or C_BLACK}):Play()
-
-	pcall(function() Callbacks.OnAutoMiningChanged(autoOn) end)
-end
-
-ToggleBtn.MouseButton1Click:Connect(function()
-	setToggle(not autoOn)
-end)
-
--- Drawer builder
-local function createDrawer(parent, title, items, category)
-	local wrap = mk("Frame", {BackgroundColor3=C_BLACK2, BackgroundTransparency=0.18, BorderSizePixel=0, Size=UDim2.new(1,0,0,48), Parent=parent})
-	addCorner(wrap, 12)
-	addStroke(wrap, 1, C_RED2, 0.25)
-
-	local head = mk("TextButton", {Text="", BackgroundTransparency=1, Size=UDim2.new(1,0,0,42), Parent=wrap, AutoButtonColor=false})
-	local ttl = mk("TextLabel", {Text=title, Size=UDim2.new(1,-60,1,0), Position=UDim2.fromOffset(12,0), Parent=head})
-	setTextStyle(ttl)
-	ttl.TextSize = 14
-
-	local arrow = mk("TextLabel", {Text="v", Size=UDim2.fromOffset(24,24), AnchorPoint=Vector2.new(1,0.5), Position=UDim2.new(1,-12,0.5,0), Parent=head})
-	setTextStyle(arrow)
-	arrow.TextXAlignment = Enum.TextXAlignment.Center
-	arrow.TextSize = 16
-
-	local listFrame = mk("ScrollingFrame", {
-		Visible = false,
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, -16, 0, 160),
-		Position = UDim2.fromOffset(8, 44),
-		CanvasSize = UDim2.new(0,0,0,0),
-		ScrollBarThickness = 6,
-		ScrollBarImageColor3 = C_RED2,
-		Parent = wrap
-	})
-	addList(listFrame, 6)
-	addPadding(listFrame, 2)
-
-	local opened = false
-	local function recalcCanvas()
-		task.defer(function()
-			local ui = listFrame:FindFirstChildOfClass("UIListLayout")
-			if ui then
-				listFrame.CanvasSize = UDim2.new(0,0,0, ui.AbsoluteContentSize.Y + 6)
-			end
-		end)
-	end
-
-	local state = {} -- name -> bool
-
-	for _, name in ipairs(items) do
-		state[name] = false
-
-		local item = mk("TextButton", {
-			Text = "",
-			BackgroundColor3 = C_BLACK,
-			BorderSizePixel = 0,
-			AutoButtonColor = false,
-			Size = UDim2.new(1, 0, 0, 32),
-			Parent = listFrame
-		})
-		addCorner(item, 10)
-		addStroke(item, 1, C_RED2, 0.35)
-
-		local box = mk("Frame", {Size=UDim2.fromOffset(18,18), Position=UDim2.fromOffset(10,7), BackgroundColor3=C_BLACK2, BorderSizePixel=0, Parent=item})
-		addCorner(box, 5)
-		addStroke(box, 1, C_RED2, 0.2)
-
-		local tick = mk("Frame", {Size=UDim2.fromOffset(10,10), Position=UDim2.fromOffset(4,4), BackgroundColor3=C_RED, BorderSizePixel=0, Visible=false, Parent=box})
-		addCorner(tick, 3)
-
-		local txt = mk("TextLabel", {Text=name, Size=UDim2.new(1, -40, 1, 0), Position=UDim2.fromOffset(36,0), Parent=item})
-		setTextStyle(txt)
-		txt.TextSize = 13
-
-		item.MouseButton1Click:Connect(function()
-			state[name] = not state[name]
-			tick.Visible = state[name]
-			pcall(function() Callbacks.OnFilterChanged(category, name, state[name]) end)
-		end)
-	end
-
-	recalcCanvas()
-
-	local function setOpen(v)
-		opened = v and true or false
-		listFrame.Visible = opened
-		arrow.Text = opened and "^" or "v"
-		wrap.Size = opened and UDim2.new(1,0,0, 44 + 160 + 6) or UDim2.new(1,0,0,48)
-	end
-
-	head.MouseButton1Click:Connect(function()
-		setOpen(not opened)
-	end)
-
-	return {
-		SetOpen = setOpen,
-		State = state,
-		ClearAll = function()
-			for k in pairs(state) do state[k] = false end
-			for _, child in ipairs(listFrame:GetChildren()) do
-				if child:IsA("TextButton") then
-					local box = child:FindFirstChildWhichIsA("Frame")
-					if box then
-						local tick = box:FindFirstChildWhichIsA("Frame")
-						if tick then tick.Visible = false end
-					end
-				end
-			end
+	track(globalConnections, UserInputService.InputEnded:Connect(function(input)
+		if input == dragInput then
+			dragging = false
+			dragInput = nil
 		end
-	}
+	end))
 end
 
--- Items placeholder (provide your own lists from server/game config)
--- For legal use in your own experience, populate these arrays with your actual zones/rocks/ores.
-local Zones = { "ZoneA", "ZoneB", "ZoneC" }
-local Rocks = { "RockA", "RockB", "RockC" }
-local Ores  = { "OreA", "OreB", "OreC" }
+--// Content builder utils
+local function clearContent()
+	disconnectAll(tabConnections)
+	for _, child in ipairs(ContentScroll:GetChildren()) do
+		if child:IsA("UIListLayout") or child:IsA("UIPadding") then
+			continue
+		end
+		child:Destroy()
+	end
+	ContentScroll.CanvasPosition = Vector2.new(0, 0)
+end
 
-headerLabel(AutoTab, "Filters (Laci)")
-local DrawerZones = createDrawer(AutoTab, "Laci Zone", Zones, "Zones")
-local DrawerRocks = createDrawer(AutoTab, "Laci Rock", Rocks, "Rocks")
-local DrawerOres  = createDrawer(AutoTab, "Laci Ore",  Ores,  "Ores")
+local function createTabButton(text)
+	local btn = mkButton(TabFrame, text, 14)
+	btn.Size = UDim2.new(1, 0, 0, 110)
+	btn.BackgroundColor3 = THEME.Button
+	uiCorner(btn, 10)
+	return btn
+end
 
--- =========================================================
---  SETTINGS TAB CONTENT (Sliders)
--- =========================================================
-addPadding(SetTab, 12)
-addList(SetTab, 12)
+local selectedTabButton = nil
+local function setTabSelected(btn)
+	if selectedTabButton and selectedTabButton.Parent then
+		selectedTabButton.BackgroundColor3 = THEME.Button
+	end
+	selectedTabButton = btn
+	btn.BackgroundColor3 = THEME.ButtonActive
+end
 
-headerLabel(SetTab, "Movement Settings")
+local function createCheckboxRow(parent, text, initial, onChanged)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, 0, 0, 100)
+	row.BackgroundTransparency = 1
+	row.Parent = parent
 
-local function createSlider(parent, title, minV, maxV, defaultV, onChanged)
-	local wrap = mk("Frame", {BackgroundColor3=C_BLACK2, BackgroundTransparency=0.18, BorderSizePixel=0, Size=UDim2.new(1,0,0,70), Parent=parent})
-	addCorner(wrap, 12)
-	addStroke(wrap, 1, C_RED2, 0.25)
-	addPadding(wrap, 12)
+	local box = Instance.new("TextButton")
+	box.Size = UDim2.fromOffset(50, 50)
+	box.Position = UDim2.new(0, 12, 0.5, -25)
+	box.Text = ""
+	box.AutoButtonColor = false
+	box.BackgroundColor3 = initial and THEME.BoxOn or THEME.BoxOff
+	box.Parent = row
+	uiCorner(box, 10)
 
-	local lbl = mk("TextLabel", {Text=title, Size=UDim2.new(1,0,0,18), Parent=wrap})
-	setTextStyle(lbl)
-	lbl.TextSize = 14
+	local lb = mkLabel(row, text, 14, true)
+	lb.Size = UDim2.new(1, -90, 1, 0)
+	lb.Position = UDim2.new(0, 80, 0, 0)
 
-	local valLbl = mk("TextLabel", {Text=tostring(defaultV), Size=UDim2.fromOffset(80,18), AnchorPoint=Vector2.new(1,0), Position=UDim2.new(1,0,0,0), Parent=wrap})
-	setTextStyle(valLbl)
-	valLbl.TextXAlignment = Enum.TextXAlignment.Right
-	valLbl.TextTransparency = 0.1
+	local state = initial
+	local function repaint()
+		box.BackgroundColor3 = state and THEME.BoxOn or THEME.BoxOff
+	end
 
-	local bar = mk("Frame", {BackgroundColor3=C_BLACK, BorderSizePixel=0, Size=UDim2.new(1,0,0,10), Position=UDim2.fromOffset(0, 34), Parent=wrap})
-	addCorner(bar, 8)
-	addStroke(bar, 1, C_RED2, 0.35)
+	track(tabConnections, box.Activated:Connect(function()
+		if not scriptRunning then return end
+		state = not state
+		repaint()
+		onChanged(state)
+	end))
 
-	local fill = mk("Frame", {BackgroundColor3=C_RED2, BorderSizePixel=0, Size=UDim2.new(0,0,1,0), Parent=bar})
-	addCorner(fill, 8)
+	return row
+end
 
-	local knob = mk("Frame", {BackgroundColor3=C_RED, BorderSizePixel=0, Size=UDim2.fromOffset(18,18), Parent=bar})
-	addCorner(knob, 9)
-	knob.Position = UDim2.new(0, -9, 0.5, -9)
+local function createSlider(parent, title, minV, maxV, initial, onChanged)
+	local holder = Instance.new("Frame")
+	holder.Size = UDim2.new(1, 0, 0, 170)
+	holder.BackgroundTransparency = 1
+	holder.Parent = parent
+
+	local label = mkLabel(holder, title .. ": " .. tostring(initial), 14, false)
+	label.Size = UDim2.new(1, 0, 0, 70)
+	label.Position = UDim2.new(0, 10, 0, 0)
+
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.new(1, -20, 0, 18)
+	bar.Position = UDim2.new(0, 10, 0, 92)
+	bar.BackgroundColor3 = THEME.TitleBg
+	bar.BorderSizePixel = 0
+	bar.Parent = holder
+	bar.Active = true -- bantu agar input slider konsisten
+	uiCorner(bar, 9)
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.fromOffset(32, 46)
+	knob.BackgroundColor3 = THEME.Accent
+	knob.BorderSizePixel = 0
+	knob.Parent = bar
+	uiCorner(knob, 12)
+
+	local value = math.clamp(initial, minV, maxV)
+
+	local function setValueFromRel(rel)
+		rel = math.clamp(rel, 0, 1)
+		value = math.floor((minV + (maxV - minV) * rel) + 0.5)
+		local rel2 = (value - minV) / (maxV - minV)
+		knob.Position = UDim2.new(rel2, -16, 0.5, -23)
+		label.Text = title .. ": " .. tostring(value)
+		onChanged(value)
+	end
+
+	setValueFromRel((value - minV) / (maxV - minV))
 
 	local dragging = false
-	local current = defaultV
+	local dragConnChanged, dragConnEnded = nil, nil
 
-	local function setValue(v)
-		current = clamp(v, minV, maxV)
-		valLbl.Text = tostring(current)
-
-		local alpha = (current - minV) / (maxV - minV)
-		local px = math.floor(alpha * bar.AbsoluteSize.X)
-		fill.Size = UDim2.new(0, px, 1, 0)
-		knob.Position = UDim2.new(0, px - 9, 0.5, -9)
-
-		if onChanged then pcall(onChanged, current) end
+	local function stopDrag()
+		dragging = false
+		if dragConnChanged then dragConnChanged:Disconnect() end
+		if dragConnEnded then dragConnEnded:Disconnect() end
+		dragConnChanged, dragConnEnded = nil, nil
 	end
 
-	local function valueFromX(x)
-		local rel = clamp(x - bar.AbsolutePosition.X, 0, bar.AbsoluteSize.X)
-		local alpha = rel / bar.AbsoluteSize.X
-		local v = minV + alpha * (maxV - minV)
-		return round(v)
-	end
-
-	local function beginDrag(input)
+	local function startDrag(startInput)
 		dragging = true
-		setValue(valueFromX(input.Position.X))
+
+		local function updateByX(x)
+			local rel = (x - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1)
+			setValueFromRel(rel)
+		end
+
+		updateByX(startInput.Position.X)
+
+		dragConnChanged = UserInputService.InputChanged:Connect(function(input)
+			if not dragging then return end
+			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+				updateByX(input.Position.X)
+			end
+		end)
+
+		dragConnEnded = UserInputService.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				stopDrag()
+			end
+		end)
+
+		table.insert(tabConnections, dragConnChanged)
+		table.insert(tabConnections, dragConnEnded)
 	end
 
-	bar.InputBegan:Connect(function(input)
+	track(tabConnections, bar.InputBegan:Connect(function(input)
+		if not scriptRunning then return end
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			beginDrag(input)
+			startDrag(input)
 		end
-	end)
+	end))
 
-	knob.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			beginDrag(input)
-		end
-	end)
-
-	UIS.InputChanged:Connect(function(input)
-		if not dragging then return end
-		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-			setValue(valueFromX(input.Position.X))
-		end
-	end)
-
-	UIS.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = false
-		end
-	end)
-
-	-- init after render
-	task.defer(function() setValue(defaultV) end)
-
-	return { SetValue = setValue, GetValue = function() return current end }
+	return holder
 end
 
-local TweenSpeedSlider = createSlider(SetTab, "Tween Speed (20 - 80)", 20, 80, 50, function(v)
-	Callbacks.OnTweenSpeedChanged(v)
-end)
+local function createCollapsibleSection(title, items, settingsTable, settingsKey)
+	ensureBranch(Settings, settingsKey)
+	ensureBranch(_G.Settings, settingsKey)
 
-local YOffsetSlider = createSlider(SetTab, "Y Offset (-7 - 7)", -7, 7, -6, function(v)
-	Callbacks.OnYOffsetChanged(v)
-end)
+	local section = Instance.new("Frame")
+	section.Size = UDim2.new(1, 0, 0, 0)
+	section.AutomaticSize = Enum.AutomaticSize.Y
+	section.BackgroundTransparency = 1
+	section.Parent = ContentScroll
 
--- =========================================================
---  CLOSE SHOULD STOP & CLEAR (template behavior)
--- =========================================================
-local function stopAndClear()
-	pcall(function() Callbacks.OnAutoMiningChanged(false) end)
-	pcall(function()
-		-- Clear UI checks (and call filter false if desired)
-		DrawerZones.ClearAll()
-		DrawerRocks.ClearAll()
-		DrawerOres.ClearAll()
-	end)
-	pcall(function() Callbacks.OnClose() end)
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Padding = UDim.new(0, 12)
+	layout.Parent = section
+
+	local header = mkButton(section, "► " .. title, 14)
+	header.Size = UDim2.new(1, 0, 0, 110)
+	header.BackgroundColor3 = THEME.Header
+	uiCorner(header, 10)
+
+	local content = Instance.new("Frame")
+	content.Size = UDim2.new(1, 0, 0, 0)
+	content.BackgroundColor3 = THEME.Holder
+	content.BorderSizePixel = 0
+	content.ClipsDescendants = true
+	content.Parent = section
+	uiCorner(content, 10)
+
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 14)
+	pad.PaddingBottom = UDim.new(0, 14)
+	pad.Parent = content
+
+	local contentLayout = Instance.new("UIListLayout")
+	contentLayout.FillDirection = Enum.FillDirection.Vertical
+	contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	contentLayout.Padding = UDim.new(0, 10)
+	contentLayout.Parent = content
+
+	for _, itemNameAny in ipairs(items) do
+		local itemName = tostring(itemNameAny)
+
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 86)
+		row.BackgroundTransparency = 1
+		row.Parent = content
+
+		local box = Instance.new("TextButton")
+		box.Size = UDim2.fromOffset(50, 50)
+		box.Position = UDim2.new(0, 14, 0.5, -25)
+		box.Text = ""
+		box.AutoButtonColor = false
+		box.Parent = row
+		uiCorner(box, 10)
+
+		local label = mkLabel(row, itemName, 16, false)
+		label.Size = UDim2.new(1, -110, 1, 0)
+		label.Position = UDim2.new(0, 88, 0, 0)
+		label.TextColor3 = THEME.Text
+
+		local state = settingsTable[itemName] and true or false
+		local function repaint()
+			box.BackgroundColor3 = state and THEME.BoxOn or THEME.BoxOff
+		end
+		repaint()
+
+		track(tabConnections, box.Activated:Connect(function()
+			if not scriptRunning then return end
+			state = not state
+			repaint()
+			settingsTable[itemName] = state
+			_G.Settings[settingsKey][itemName] = state
+		end))
+	end
+
+	local expanded = false
+
+	local function getExpandedHeight()
+		RunService.Heartbeat:Wait()
+		local h = contentLayout.AbsoluteContentSize.Y
+		local padH = 28
+		return h + padH
+	end
+
+	local function setExpanded(on)
+		expanded = on
+		header.Text = (expanded and "▼ " or "► ") .. title
+		local goalH = expanded and getExpandedHeight() or 0
+		TweenService:Create(
+			content,
+			TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ Size = UDim2.new(1, 0, 0, goalH) }
+		):Play()
+	end
+
+	track(tabConnections, header.Activated:Connect(function()
+		if not scriptRunning then return end
+		setExpanded(not expanded)
+	end))
 end
 
-BtnClose.MouseButton1Click:Connect(function()
-	stopAndClear()
-	ScreenGui:Destroy()
-end)
+--// Tabs
+local function buildAutoTab()
+	clearContent()
 
--- =========================================================
---  EXPORT (optional)
--- =========================================================
-return {
-	Gui = ScreenGui,
-	SetCallbacks = function(newCbs)
-		for k,v in pairs(newCbs) do
-			if Callbacks[k] ~= nil and type(v) == "function" then
-				Callbacks[k] = v
-			end
-		end
-	end,
-	SetAutoMining = function(on) setToggle(on) end,
-	SetTweenSpeed = function(v) TweenSpeedSlider.SetValue(v) end,
-	SetYOffset = function(v) YOffsetSlider.SetValue(v) end
-}
+	createCheckboxRow(ContentScroll, "Enable Auto Mining", Settings.AutoFarm == true, function(v)
+		Settings.AutoFarm = v
+		_G.Settings.AutoFarm = v
+	end)
+
+	createCollapsibleSection(("Zones (%d)"):format(#DATA.Zones), DATA.Zones, Settings.Zones, "Zones")
+	createCollapsibleSection(("Rocks (%d)"):format(#DATA.Rocks), DATA.Rocks, Settings.Rocks, "Rocks")
+	createCollapsibleSection(("Ores (%d)"):format(#DATA.Ores), DATA.Ores, Settings.Ores, "Ores")
+end
+
+local function buildSettingTab()
+	clearContent()
+
+	createSlider(ContentScroll, "Tween Speed", 25, 80, Settings.TweenSpeed or 40, function(v)
+		Settings.TweenSpeed = v
+		_G.Settings.TweenSpeed = v
+	end)
+
+	createSlider(ContentScroll, "Y Offset", -10, 10, Settings.YOffset or 2, function(v)
+		Settings.YOffset = v
+		_G.Settings.YOffset = v
+	end)
+end
+
+--// Tab buttons
+local autoBtn = createTabButton("Auto Mining")
+local settingBtn = createTabButton("Settings")
+
+track(globalConnections, autoBtn.Activated:Connect(function()
+	if not scriptRunning then return end
+	if minimized then toggleMinimize() end
+	setTabSelected(autoBtn)
+	buildAutoTab()
+end))
+
+track(globalConnections, settingBtn.Activated:Connect(function()
+	if not scriptRunning then return end
+	if minimized then toggleMinimize() end
+	setTabSelected(settingBtn)
+	buildSettingTab()
+end))
+
+-- Default
+setTabSelected(autoBtn)
+buildAutoTab()
+
+print("[✓] GUI Loaded Successfully!")
+print("[✓] Press L to minimize/restore")
+print("[✓] Click × to close and stop script")
