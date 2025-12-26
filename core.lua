@@ -1,869 +1,594 @@
--- ============================================
--- AUTO MINING SCRIPT - OPTIMIZED VERSION 9.1
--- Struktur yang benar berdasarkan informasi:
--- Workspace.Rocks.Zone (Folder).SpawnLocation (Part).Rock (Model)
--- ============================================
+--// ===== The Forge Core (FULL) =====
+--// Features:
+--// - nil-safe Settings branches (prevents "attempt to index nil with 'Rocks'")
+--// - Rocks empty => ALL rocks allowed
+--// - Zones empty => ALL zones allowed (optional toggle)
+--// - Descendants scan for zone content
+--// - Tween movement: SPEED ONLY
+--// - Center-on-rock positioning (X/Z = rock center, only YOffset changes)
+--// - Hard lock anti-fall (PlatformStand + CFrame lock + optional Anchored)
+--// - Camera stabilize (BindToRenderStep + Scriptable), minimal shake
 
-local Players, Workspace, RunService, TweenService, ReplicatedStorage = 
-      game:GetService("Players"), game:GetService("Workspace"), 
-      game:GetService("RunService"), game:GetService("TweenService"),
-      game:GetService("ReplicatedStorage")
+-- Services
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local localPlayer = Players.LocalPlayer
-local USER_ID = localPlayer.UserId
+local CAMERA_BIND_NAME = "Forge_CameraFollow"
 
--- ===================== KONSTANTA & DATA =====================
+-- ========= DEBUG FLAGS =========
+_G.ForgeDebug = (_G.ForgeDebug ~= nil) and _G.ForgeDebug or true
+_G.ForgeDebugLevel = _G.ForgeDebugLevel or 1 -- 1 ringkas, 2 detail
+
+local function D(tag, msg, extra)
+	if not _G.ForgeDebug then return end
+	local pfx = ("[ForgeDBG:%s] "):format(tag)
+	if extra ~= nil then
+		warn(pfx .. msg .. " | " .. tostring(extra))
+	else
+		warn(pfx .. msg)
+	end
+end
+
+-- nil-safe boolCount
+local function boolCount(map)
+	if type(map) ~= "table" then
+		return false, 0
+	end
+	local any, count = false, 0
+	for _, v in pairs(map) do
+		if v == true then
+			any = true
+			count += 1
+		end
+	end
+	return any, count
+end
+
+-- Prevent double load
+if _G.__ForgeCoreLoaded then
+	warn("[!] Forge Core already loaded.")
+	D("BOOT", "Blocked by _G.__ForgeCoreLoaded")
+	return
+end
+_G.__ForgeCoreLoaded = true
+D("BOOT", "Core starting...")
+
+local Player = Players.LocalPlayer
+
+-- ========= DATA =========
 local DATA = {
-    Zones = {
-        "Island2CaveDanger1", "Island2CaveDanger2", "Island2CaveDanger3",
-        "Island2CaveDanger4", "Island2CaveDangerClosed", "Island2CaveDeep",
-        "Island2CaveLavaClosed", "Island2CaveMid", "Island2CaveStart",
-        "Island2GoblinCave", "Island2VolcanicDepths"
-    },
-    Rocks = {
-        "Basalt", "Basalt Core", "Basalt Rock", "Basalt Vein", "Boulder",
-        "Crimson Crystal", "Cyan Crystal", "Earth Crystal", "Lava Rock",
-        "Light Crystal", "Lucky Block", "Pebble", "Rock", "Violet Crystal",
-        "Volcanic Rock"
-    },
-    Ores = {
-        "Aite", "Amethyst", "Arcane Crystal", "Bananite", "Blue Crystal",
-        "Boneite", "Cardboardite", "Cobalt", "Copper", "Crimson Crystal",
-        "Cuprite", "Dark Boneite", "Darkryte", "Demonite", "Diamond",
-        "Emerald", "Eye Ore", "Fichillium", "Fichilliumorite", "Fireite",
-        "Galaxite", "Gold", "Grass", "Green Crystal", "Iceite", "Iron",
-        "Jade", "Lapis Lazuli", "Lightite", "Magenta Crystal", "Magmaite",
-        "Meteorite", "Mushroomite", "Mythril", "Obsidian", "Orange Crystal",
-        "Platinum", "Poopite", "Quartz", "Rainbow Crystal", "Rivalite",
-        "Ruby", "Sand Stone", "Sapphire", "Silver", "Slimite", "Starite",
-        "Stone", "Tin", "Titanium", "Topaz", "Uranium", "Volcanic Rock"
-    }
+	Zones = {
+		"Island2CaveDanger1","Island2CaveDanger2","Island2CaveDanger3",
+		"Island2CaveDanger4","Island2CaveDangerClosed","Island2CaveDeep",
+		"Island2CaveLavaClosed","Island2CaveMid","Island2CaveStart",
+		"Island2GoblinCave","Island2VolcanicDepths",
+	},
+	Rocks = {
+		"Basalt","Basalt Core","Basalt Rock","Basalt Vein","Boulder",
+		"Crimson Crystal","Cyan Crystal","Earth Crystal","Lava Rock",
+		"Light Crystal","Lucky Block","Pebble","Rock","Violet Crystal",
+		"Volcanic Rock",
+	},
+	Ores = {
+		"Aite","Amethyst","Arcane Crystal","Bananite","Blue Crystal",
+		"Boneite","Cardboardite","Cobalt","Copper","Crimson Crystal",
+		"Cuprite","Dark Boneite","Darkryte","Demonite","Diamond",
+		"Emerald","Eye Ore","Fichillium","Fichilliumorite","Fireite",
+		"Galaxite","Gold","Grass","Green Crystal","Iceite","Iron",
+		"Jade","Lapis Lazuli","Lightite","Magenta Crystal","Magmaite",
+		"Meteorite","Mushroomite","Mythril","Obsidian","Orange Crystal",
+		"Platinum","Poopite","Quartz","Rainbow Crystal","Rivalite",
+		"Ruby","Sand Stone","Sapphire","Silver","Slimite","Starite",
+		"Stone","Tin","Titanium","Topaz","Uranium","Volcanic Rock",
+	},
 }
 
--- ===================== LOOKUP TABLES O(1) =====================
-local ZONES_LOOKUP, ROCKS_LOOKUP, ORES_LOOKUP = {}, {}, {}
+-- Export ASAP for GUI
+_G.DATA = _G.DATA or DATA
+D("BOOT", "_G.DATA ready")
 
--- Inisialisasi lookup tables (sangat cepat untuk validasi)
-for _, v in ipairs(DATA.Zones) do ZONES_LOOKUP[v] = true end
-for _, v in ipairs(DATA.Rocks) do ROCKS_LOOKUP[v] = true end
-for _, v in ipairs(DATA.Ores) do ORES_LOOKUP[v] = true end
+-- ========= SETTINGS =========
+_G.Settings = _G.Settings or {}
+local Settings = _G.Settings
 
--- ===================== KONFIGURASI GUI =====================
-local CONFIG = {
-    -- GUI Sliders
-    TweenSpeed = 50,        -- Range: 20-80
-    YOffset = -6,           -- Range: -7 to 7
-    MiningInterval = 0.5,
-    
-    -- Game Constants
-    OreThreshold = 45,      -- Ore muncul saat health < 45%
-    
-    -- Performance Settings
-    ScanInterval = 20,
-    MaxSwingsPerRock = 100,
-    SwingSampleSize = 10
-}
+-- ensure branches exist
+Settings.Zones = Settings.Zones or {}
+Settings.Rocks = Settings.Rocks or {}
+Settings.Ores  = Settings.Ores  or {}
 
--- ===================== SISTEM UTAMA =====================
-local SYSTEMS = {
-    -- State Management
-    MiningActive = false,
-    CurrentRock = nil,
-    NextRock = nil,
-    Connection = nil,
-    
-    -- Remote Cache
-    MiningRemote = nil,
-    
-    -- Instance Cache (LRU Pattern)
-    Cache = {
-        Zones = {},        -- ZoneName → ZoneInstance
-        Rocks = {},        -- RockName → {rock, zone, oreType}
-        ZoneRocks = {},    -- ZoneName → {rock1, rock2, ...}
-        LastUpdate = 0
-    },
-    
-    -- Filter System
-    Filter = {
-        Zones = {},        -- ZoneName → boolean
-        Rocks = {},        -- RockName → boolean  
-        Ores = {},         -- OreName → boolean
-        IsActive = false
-    },
-    
-    -- Swing Prediction
-    Predictor = {
-        Samples = {},           -- Global damage samples
-        RockData = {},          -- Per-rock data
-        AverageDamage = 20,     -- Default value
-    }
-}
-
--- ===================== INISIALISASI FILTER =====================
-for _, zone in ipairs(DATA.Zones) do SYSTEMS.Filter.Zones[zone] = false end
-for _, rock in ipairs(DATA.Rocks) do SYSTEMS.Filter.Rocks[rock] = false end
-for _, ore in ipairs(DATA.Ores) do SYSTEMS.Filter.Ores[ore] = false end
-
--- ===================== FUNGSI UTAMA =====================
-
--- Fungsi untuk mendapatkan mining remote (lazy loading)
-local function getMiningRemote()
-    if not SYSTEMS.MiningRemote then
-        SYSTEMS.MiningRemote = ReplicatedStorage:WaitForChild("Shared")
-            :WaitForChild("Packages"):WaitForChild("Knit")
-            :WaitForChild("Services"):WaitForChild("ToolService")
-            :WaitForChild("RF"):WaitForChild("ToolActivated")
-    end
-    return SYSTEMS.MiningRemote
+local function setDefault(k, v)
+	if Settings[k] == nil then Settings[k] = v end
 end
 
--- Fungsi untuk update status filter
-local function updateFilterStatus()
-    local active = false
-    
-    -- Cek jika ada filter yang aktif
-    for _, enabled in pairs(SYSTEMS.Filter.Zones) do
-        if enabled then active = true; break end
-    end
-    
-    if not active then
-        for _, enabled in pairs(SYSTEMS.Filter.Rocks) do
-            if enabled then active = true; break end
-        end
-    end
-    
-    if not active then
-        for _, enabled in pairs(SYSTEMS.Filter.Ores) do
-            if enabled then active = true; break end
-        end
-    end
-    
-    SYSTEMS.Filter.IsActive = active
-    return active
+-- Base settings
+setDefault("AutoFarm", false)
+setDefault("TweenSpeed", 40)       -- studs/sec
+setDefault("YOffset", 0)           -- IMPORTANT: only vertical shift now
+setDefault("CheckThreshold", 45)
+setDefault("ScanInterval", 0.25)
+setDefault("HitInterval", 0.15)
+setDefault("TargetStickTime", 0.35)
+
+-- UX toggles: allow all if none selected
+setDefault("AllowAllZonesIfNoneSelected", true)
+setDefault("AllowAllRocksIfNoneSelected", true)
+
+-- Lock settings
+setDefault("LockToTarget", true)
+setDefault("LockVelocityZero", true)
+setDefault("AnchorDuringLock", true) -- strongest anti-fall + reduces jitter
+
+-- Camera settings
+setDefault("CameraStabilize", true)
+setDefault("CameraSmoothAlpha", 1) -- 1 = hard set (paling anti jitter)
+setDefault("CameraOffsetWorld", Vector3.new(0, 10, 18)) -- world offset, not rotated by root
+
+-- init checkbox keys
+for _, n in ipairs(DATA.Zones) do if Settings.Zones[n] == nil then Settings.Zones[n] = false end end
+for _, n in ipairs(DATA.Rocks) do if Settings.Rocks[n] == nil then Settings.Rocks[n] = false end end
+for _, n in ipairs(DATA.Ores)  do if Settings.Ores[n]  == nil then Settings.Ores[n]  = false end end
+
+if _G.FarmLoop == nil then _G.FarmLoop = true end
+
+D("BOOT", "Settings ready", ("AutoFarm=%s TweenSpeed=%s YOffset=%s"):format(
+	tostring(Settings.AutoFarm), tostring(Settings.TweenSpeed), tostring(Settings.YOffset)
+))
+
+-- ========= CHARACTER UTILS =========
+local function GetChar()
+	local c = Player.Character
+	if not c or not c.Parent then return nil end
+	return c
 end
 
--- Fungsi untuk validasi apakah rock lolos filter
-local function rockPassesFilter(rockName, oreType)
-    if not SYSTEMS.Filter.IsActive then return true end
-    
-    -- Cek rock filter
-    if SYSTEMS.Filter.Rocks[rockName] then
-        return true
-    end
-    
-    -- Cek ore filter
-    if oreType and SYSTEMS.Filter.Ores[oreType] then
-        return true
-    end
-    
-    return false
+local function GetHumanoid()
+	local c = GetChar()
+	if not c then return nil end
+	return c:FindFirstChildOfClass("Humanoid")
 end
 
--- Fungsi untuk validasi apakah zone lolos filter
-local function zonePassesFilter(zoneName)
-    if not SYSTEMS.Filter.IsActive then return true end
-    return SYSTEMS.Filter.Zones[zoneName] == true
+local function GetCharAndRoot()
+	local c = GetChar()
+	if not c then return nil, nil end
+	local r = c:FindFirstChild("HumanoidRootPart")
+	return c, r
 end
 
--- ===================== SCANNING SYSTEM =====================
--- Berdasarkan struktur: Workspace.Rocks.Zone.SpawnLocation.Rock
-local function scanWorkspace()
-    local startTime = tick()
-    local rocksFolder = Workspace:FindFirstChild("Rocks")
-    
-    if not rocksFolder then
-        warn("Folder 'Rocks' tidak ditemukan di Workspace!")
-        return
-    end
-    
-    -- Reset cache
-    local newCache = {
-        Zones = {},
-        Rocks = {},
-        ZoneRocks = {},
-        LastUpdate = tick()
-    }
-    
-    -- Iterasi melalui semua zone
-    for _, zone in ipairs(rocksFolder:GetChildren()) do
-        local zoneName = zone.Name
-        
-        -- Validasi zone
-        if not ZONES_LOOKUP[zoneName] then
-            continue  -- Zone tidak valid, skip
-        end
-        
-        -- Filter zone jika aktif
-        if SYSTEMS.Filter.IsActive and not zonePassesFilter(zoneName) then
-            continue
-        end
-        
-        -- Zone lolos semua filter
-        newCache.Zones[zoneName] = zone
-        newCache.ZoneRocks[zoneName] = {}
-        
-        -- Cari SpawnLocation (Part) di dalam Zone
-        for _, spawnLocation in ipairs(zone:GetChildren()) do
-            -- SpawnLocation harus Part
-            if not spawnLocation:IsA("BasePart") then
-                continue
-            end
-            
-            -- Cek pattern nama SpawnLocation
-            if not (string.find(spawnLocation.Name:lower(), "spawn") or 
-                    spawnLocation.Name == "SpawnLocation") then
-                continue
-            end
-            
-            -- Iterasi melalui semua Rock (Model) di SpawnLocation
-            for _, rock in ipairs(spawnLocation:GetChildren()) do
-                local rockName = rock.Name
-                
-                -- Validasi rock
-                if not ROCKS_LOOKUP[rockName] or not rock:IsA("Model") then
-                    continue
-                end
-                
-                -- Validasi health dan ownership
-                local health = rock:GetAttribute("Health")
-                local owner = rock:GetAttribute("LastHitPlayer")
-                
-                if not health or health <= 0 then
-                    continue  -- Rock sudah hancur
-                end
-                
-                if owner and owner ~= USER_ID then
-                    continue  -- Dimiliki pemain lain
-                end
-                
-                -- Dapatkan ore type dari attribute rock
-                local oreType = rock:GetAttribute("Ore")
-                
-                -- Filter rock
-                if not rockPassesFilter(rockName, oreType) then
-                    continue
-                end
-                
-                -- Rock valid, tambahkan ke cache
-                local rockData = {
-                    Instance = rock,
-                    Zone = zoneName,
-                    Name = rockName,
-                    OreType = oreType,
-                    Health = health,
-                    Position = rock:GetPivot().Position
-                }
-                
-                table.insert(newCache.ZoneRocks[zoneName], rockData)
-                newCache.Rocks[rockName] = rockData
-            end
-        end
-    end
-    
-    -- Update cache system
-    SYSTEMS.Cache = newCache
-    
-    -- Logging
-    local scanTime = tick() - startTime
-    local rockCount = 0
-    for _, rocks in pairs(SYSTEMS.Cache.ZoneRocks) do
-        rockCount = rockCount + #rocks
-    end
-    
-    print(string.format("✅ Scan selesai: %.3f detik", scanTime))
-    print(string.format("📁 Zones: %d", countTable(SYSTEMS.Cache.Zones)))
-    print(string.format("🪨 Rocks: %d", rockCount))
-    
-    return true
+-- ========= NOCLIP =========
+local noclipConn, descConn
+local partsSet = {}
+local originalCollide = {}
+
+local function cacheCharacterParts(c)
+	table.clear(partsSet)
+	table.clear(originalCollide)
+	if not c then return end
+	for _, inst in ipairs(c:GetDescendants()) do
+		if inst:IsA("BasePart") then
+			partsSet[inst] = true
+			originalCollide[inst] = inst.CanCollide
+		end
+	end
 end
 
--- ===================== SWING PREDICTION SYSTEM =====================
--- Sistem prediksi untuk mengetahui swing terakhir
+local function enableNoclip()
+	if noclipConn then return end
 
-local function updateSwingPrediction(rock, newHealth)
-    if not rock then return end
-    
-    local rockKey = tostring(rock)
-    local oldHealth = SYSTEMS.Predictor.RockData[rockKey] and 
-                      SYSTEMS.Predictor.RockData[rockKey].LastHealth
-    
-    if oldHealth and oldHealth > 0 then
-        local damage = oldHealth - newHealth
-        
-        if damage > 0 then
-            -- Update global samples
-            table.insert(SYSTEMS.Predictor.Samples, damage)
-            if #SYSTEMS.Predictor.Samples > CONFIG.SwingSampleSize then
-                table.remove(SYSTEMS.Predictor.Samples, 1)
-            end
-            
-            -- Update average damage
-            local total = 0
-            for _, dmg in ipairs(SYSTEMS.Predictor.Samples) do
-                total = total + dmg
-            end
-            SYSTEMS.Predictor.AverageDamage = math.floor(total / #SYSTEMS.Predictor.Samples)
-            
-            -- Update rock-specific data
-            if not SYSTEMS.Predictor.RockData[rockKey] then
-                SYSTEMS.Predictor.RockData[rockKey] = {
-                    DamageHistory = {},
-                    LastHealth = newHealth
-                }
-            end
-            
-            local rockData = SYSTEMS.Predictor.RockData[rockKey]
-            table.insert(rockData.DamageHistory, damage)
-            if #rockData.DamageHistory > 5 then
-                table.remove(rockData.DamageHistory, 1)
-            end
-        end
-    end
-    
-    -- Update last health
-    if SYSTEMS.Predictor.RockData[rockKey] then
-        SYSTEMS.Predictor.RockData[rockKey].LastHealth = newHealth
-    end
+	local c = Player.Character
+	cacheCharacterParts(c)
+
+	if descConn then descConn:Disconnect() end
+	if c then
+		descConn = c.DescendantAdded:Connect(function(inst)
+			if inst:IsA("BasePart") then
+				partsSet[inst] = true
+				if originalCollide[inst] == nil then
+					originalCollide[inst] = inst.CanCollide
+				end
+				inst.CanCollide = false
+			end
+		end)
+	end
+
+	local stepSignal = RunService.PreSimulation or RunService.Stepped
+	noclipConn = stepSignal:Connect(function()
+		local c2, r2 = GetCharAndRoot()
+		if not (c2 and r2) then return end
+		for part in pairs(partsSet) do
+			if part and part.Parent then
+				part.CanCollide = false
+			else
+				partsSet[part] = nil
+				originalCollide[part] = nil
+			end
+		end
+	end)
 end
 
-local function predictRemainingSwings(rock)
-    if not rock then return 0 end
-    
-    local currentHealth = rock:GetAttribute("Health") or 0
-    local rockKey = tostring(rock)
-    local rockData = SYSTEMS.Predictor.RockData[rockKey]
-    
-    -- Jika ada data spesifik rock, gunakan itu
-    if rockData and #rockData.DamageHistory > 0 then
-        local total = 0
-        for _, dmg in ipairs(rockData.DamageHistory) do
-            total = total + dmg
-        end
-        local rockAvg = math.floor(total / #rockData.DamageHistory)
-        
-        -- Weighted average: 70% rock-specific, 30% global
-        local weightedAvg = math.floor((rockAvg * 0.7) + (SYSTEMS.Predictor.AverageDamage * 0.3))
-        
-        if weightedAvg > 0 then
-            return math.ceil(currentHealth / weightedAvg)
-        end
-    end
-    
-    -- Fallback ke global average
-    if SYSTEMS.Predictor.AverageDamage > 0 then
-        return math.ceil(currentHealth / SYSTEMS.Predictor.AverageDamage)
-    end
-    
-    return math.ceil(currentHealth / 20)  -- Default fallback
+local function disableNoclip()
+	if noclipConn then noclipConn:Disconnect() end
+	if descConn then descConn:Disconnect() end
+	noclipConn, descConn = nil, nil
+
+	for part, was in pairs(originalCollide) do
+		if part and part.Parent then
+			part.CanCollide = was
+		end
+	end
+	table.clear(partsSet)
+	table.clear(originalCollide)
 end
 
--- ===================== MOVEMENT SYSTEM =====================
--- Sistem pergerakan dengan NoClip dan Anti-Gravity
+Player.CharacterAdded:Connect(function()
+	D("CHAR", "CharacterAdded -> reset")
+	disableNoclip()
+end)
 
-local function prepareCharacter(character)
-    if not character then return false end
-    
-    -- Enable NoClip
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = false
-        end
-    end
-    
-    -- Enable Anti-Gravity
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if humanoid then
-        humanoid.PlatformStand = true
-    end
-    
-    return true
+-- ========= LOCK CONTROLLER =========
+local lockConn = nil
+local lockRoot = nil
+local lockCFrame = nil
+local lockHum = nil
+
+local prevPlatformStand = nil
+local prevAutoRotate = nil
+local prevAnchored = nil
+
+local function StopLock()
+	if lockConn then lockConn:Disconnect() end
+	lockConn = nil
+	lockCFrame = nil
+
+	if lockRoot and lockRoot.Parent then
+		if prevAnchored ~= nil then
+			lockRoot.Anchored = prevAnchored
+		end
+	end
+
+	if lockHum and lockHum.Parent then
+		if prevPlatformStand ~= nil then lockHum.PlatformStand = prevPlatformStand end
+		if prevAutoRotate ~= nil then lockHum.AutoRotate = prevAutoRotate end
+	end
+
+	lockRoot = nil
+	lockHum = nil
+	prevPlatformStand, prevAutoRotate, prevAnchored = nil, nil, nil
 end
 
-local function restoreCharacter(character)
-    if not character then return false end
-    
-    -- Disable NoClip
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = true
-        end
-    end
-    
-    -- Disable Anti-Gravity
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if humanoid then
-        humanoid.PlatformStand = false
-    end
-    
-    return true
+local function StartLock(rootPart, cf)
+	if not Settings.LockToTarget then
+		StopLock()
+		return
+	end
+
+	lockRoot = rootPart
+	lockCFrame = cf
+	lockHum = GetHumanoid()
+
+	if lockHum then
+		prevPlatformStand = lockHum.PlatformStand
+		prevAutoRotate = lockHum.AutoRotate
+		lockHum.PlatformStand = true
+		lockHum.AutoRotate = false
+	end
+
+	if lockRoot then
+		prevAnchored = lockRoot.Anchored
+		if Settings.AnchorDuringLock then
+			lockRoot.Anchored = true
+		end
+	end
+
+	if lockConn then lockConn:Disconnect() end
+	local stepSignal = RunService.PreSimulation or RunService.Stepped
+	lockConn = stepSignal:Connect(function()
+		if not (lockRoot and lockRoot.Parent and lockCFrame) then return end
+
+		-- If anchored, this is mostly redundant but keeps it pinned if something toggles it back.
+		lockRoot.CFrame = lockCFrame
+
+		if Settings.LockVelocityZero then
+			lockRoot.AssemblyLinearVelocity = Vector3.zero
+			lockRoot.AssemblyAngularVelocity = Vector3.zero
+		end
+	end)
 end
 
-local function moveToRock(character, targetPosition)
-    if not character then return false end
-    
-    local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
-    if not humanoidRootPart then return false end
-    
-    -- Hitung posisi target dengan Y offset
-    local targetPos = Vector3.new(
-        targetPosition.X,
-        targetPosition.Y + CONFIG.YOffset,
-        targetPosition.Z
-    )
-    
-    -- Hitung jarak dan durasi
-    local distance = (humanoidRootPart.Position - targetPos).Magnitude
-    local actualSpeed = CONFIG.TweenSpeed * 2  -- Konversi: 20-80 → 40-160 studs/detik
-    local duration = distance / actualSpeed
-    
-    -- Buat tween
-    local tween = TweenService:Create(
-        humanoidRootPart,
-        TweenInfo.new(duration, Enum.EasingStyle.Linear),
-        {Position = targetPos}
-    )
-    
-    -- Persiapan karakter
-    prepareCharacter(character)
-    
-    -- Jalankan tween
-    tween:Play()
-    
-    -- Tunggu tween selesai (non-blocking)
-    local startTime = tick()
-    while tick() - startTime < duration do
-        if not SYSTEMS.MiningActive then break end
-        RunService.Heartbeat:Wait()
-    end
-    
-    -- Batalkan jika masih berjalan
-    if tween.PlaybackState == Enum.PlaybackState.Playing then
-        tween:Cancel()
-    end
-    
-    -- Hadapkan karakter ke target
-    local direction = (targetPosition - humanoidRootPart.Position).Unit
-    humanoidRootPart.CFrame = CFrame.lookAt(
-        humanoidRootPart.Position,
-        humanoidRootPart.Position + Vector3.new(direction.X, 0, direction.Z)
-    )
-    
-    return true
+-- ========= CAMERA STABILIZER =========
+local camPrevType = nil
+local camPrevSubject = nil
+local camOffsetWorld = nil
+
+local function StopCameraStabilize()
+	pcall(function()
+		RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
+	end)
+
+	local cam = Workspace.CurrentCamera
+	if cam then
+		if camPrevType then cam.CameraType = camPrevType end
+		if camPrevSubject then cam.CameraSubject = camPrevSubject end
+	end
+
+	camPrevType = nil
+	camPrevSubject = nil
+	camOffsetWorld = nil
 end
 
--- ===================== MINING PROCESS =====================
--- Proses mining untuk satu rock
+local function StartCameraStabilize()
+	if not Settings.CameraStabilize then
+		StopCameraStabilize()
+		return
+	end
 
-local function mineRock(rockData)
-    if not rockData or not SYSTEMS.MiningActive then return false end
-    
-    local character = localPlayer.Character
-    if not character then return false end
-    
-    local rock = rockData.Instance
-    local rockName = rockData.Name
-    local oreType = rockData.OreType
-    local zoneName = rockData.Zone
-    
-    print(string.format("🚀 Menuju: %s (Zone: %s, Ore: %s)", 
-        rockName, zoneName, oreType or "Unknown"))
-    
-    -- Bergerak ke rock
-    if not moveToRock(character, rockData.Position) then
-        print("❌ Gagal bergerak ke rock")
-        return false
-    end
-    
-    print("✅ Sampai di posisi rock")
-    
-    -- Tunggu stabilisasi
-    wait(0.5)
-    
-    -- Validasi ulang rock sebelum mining
-    local health = rock:GetAttribute("Health")
-    local owner = rock:GetAttribute("LastHitPlayer")
-    
-    if not health or health <= 0 then
-        print("❌ Rock sudah hancur")
-        return false
-    end
-    
-    if owner and owner ~= USER_ID then
-        print("❌ Rock dimiliki pemain lain")
-        return false
-    end
-    
-    SYSTEMS.CurrentRock = rock
-    
-    -- Proses mining
-    local swingCount = 0
-    local oreSpawned = false
-    local maxSwings = CONFIG.MaxSwingsPerRock
-    
-    while SYSTEMS.MiningActive and swingCount < maxSwings do
-        -- Cek validitas rock
-        if not rock or not rock.Parent then
-            print("❌ Rock tidak ditemukan")
-            break
-        end
-        
-        local currentHealth = rock:GetAttribute("Health")
-        if not currentHealth or currentHealth <= 0 then
-            print(string.format("✅ Rock hancur: %s", rockName))
-            
-            if oreSpawned then
-                print(string.format("💰 Ore dikumpulkan: %s", oreType or "Unknown"))
-            end
-            
-            break
-        end
-        
-        -- Cek ownership
-        local currentOwner = rock:GetAttribute("LastHitPlayer")
-        if currentOwner and currentOwner ~= USER_ID then
-            print("❌ Kepemilikan berubah")
-            break
-        end
-        
-        -- Cek jika ore muncul
-        if not oreSpawned and currentHealth < CONFIG.OreThreshold then
-            oreSpawned = true
-            print(string.format("💎 Ore muncul: %s (Health: %d)", 
-                oreType or "Unknown", currentHealth))
-        end
-        
-        -- Prediksi swing tersisa
-        local remainingSwings = predictRemainingSwings(rock)
-        
-        -- Persiapan target berikutnya jika sudah dekat akhir
-        if remainingSwings <= 3 and not SYSTEMS.NextRock then
-            print(string.format("🎯 Mempersiapkan target berikutnya (%d swing tersisa)", remainingSwings))
-            
-            -- Cari target berikutnya secara async
-            task.spawn(function()
-                SYSTEMS.NextRock = findNextRock(rock)
-            end)
-        end
-        
-        -- Log prediksi
-        if remainingSwings <= 5 then
-            print(string.format("⏳ %s: %d HP (~%d swing tersisa)", 
-                rockName, currentHealth, remainingSwings))
-        end
-        
-        -- Eksekusi mining action
-        local success = pcall(function()
-            getMiningRemote():InvokeServer("Pickaxe")
-        end)
-        
-        if success then
-            swingCount = swingCount + 1
-            
-            -- Update swing prediction
-            local newHealth = rock:GetAttribute("Health")
-            updateSwingPrediction(rock, newHealth)
-            
-            -- Log swing terakhir yang diprediksi
-            if remainingSwings <= 2 then
-                print("⚡ SWING TERAKHIR DIPREDIKSI - Siap beralih")
-            end
-        else
-            print("❌ Mining action gagal")
-        end
-        
-        -- Tunggu interval mining
-        wait(CONFIG.MiningInterval)
-    end
-    
-    -- Reset state
-    if SYSTEMS.CurrentRock == rock then
-        SYSTEMS.CurrentRock = nil
-    end
-    
-    -- Restore karakter
-    restoreCharacter(character)
-    
-    return swingCount > 0
+	local cam = Workspace.CurrentCamera
+	local _, r = GetCharAndRoot()
+	local hum = GetHumanoid()
+	if not (cam and r and hum) then return end
+
+	pcall(function()
+		RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
+	end)
+
+	camPrevType = cam.CameraType
+	camPrevSubject = cam.CameraSubject
+
+	-- World offset; by default uses Settings.CameraOffsetWorld
+	camOffsetWorld = Settings.CameraOffsetWorld or Vector3.new(0, 10, 18)
+
+	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function()
+		local cam2 = Workspace.CurrentCamera
+		local _, r2 = GetCharAndRoot()
+		if not (cam2 and r2) then return end
+
+		cam2.CameraType = Enum.CameraType.Scriptable
+
+		local alpha = tonumber(Settings.CameraSmoothAlpha) or 1
+		alpha = math.clamp(alpha, 0, 1)
+
+		local desiredPos = r2.Position + camOffsetWorld
+		local desired = CFrame.new(desiredPos, r2.Position)
+
+		if alpha >= 0.999 then
+			cam2.CFrame = desired
+		else
+			cam2.CFrame = cam2.CFrame:Lerp(desired, alpha)
+		end
+	end)
 end
 
--- ===================== TARGET SELECTION =====================
--- Sistem pemilihan target berikutnya
+-- ========= TOOL REMOTE =========
+local toolActivatedRF = nil
+local lastHit = 0
 
-local function findNextRock(currentRock)
-    local cache = SYSTEMS.Cache
-    
-    for zoneName, rocks in pairs(cache.ZoneRocks) do
-        for _, rockData in ipairs(rocks) do
-            local rock = rockData.Instance
-            
-            -- Skip rock yang sedang ditambang
-            if rock == currentRock then
-                continue
-            end
-            
-            -- Validasi rock
-            if not rock or not rock.Parent then
-                continue
-            end
-            
-            local health = rock:GetAttribute("Health")
-            local owner = rock:GetAttribute("LastHitPlayer")
-            
-            if not health or health <= 0 then
-                continue
-            end
-            
-            if owner and owner ~= USER_ID then
-                continue
-            end
-            
-            -- Rock valid, return
-            return rockData
-        end
-    end
-    
-    return nil
+local function ResolveToolActivated()
+	toolActivatedRF = nil
+	local shared = ReplicatedStorage:FindFirstChild("Shared"); if not shared then return end
+	local packages = shared:FindFirstChild("Packages"); if not packages then return end
+	local knit = packages:FindFirstChild("Knit"); if not knit then return end
+	local services = knit:FindFirstChild("Services"); if not services then return end
+	local toolService = services:FindFirstChild("ToolService"); if not toolService then return end
+	local rf = toolService:FindFirstChild("RF"); if not rf then return end
+
+	local toolActivated = rf:FindFirstChild("ToolActivated")
+	if toolActivated and toolActivated:IsA("RemoteFunction") then
+		toolActivatedRF = toolActivated
+	end
 end
 
--- ===================== MAIN MINING LOOP =====================
+local function HitPickaxe()
+	local now = os.clock()
+	if (now - lastHit) < (Settings.HitInterval or 0.15) then return end
+	lastHit = now
 
-local function miningLoop()
-    if not SYSTEMS.MiningActive then return end
-    
-    while SYSTEMS.MiningActive do
-        local character = localPlayer.Character
-        if not character then
-            wait(2)
-            continue
-        end
-        
-        -- Pilih target
-        local targetRock = nil
-        
-        if SYSTEMS.NextRock then
-            -- Gunakan target yang sudah dipersiapkan
-            targetRock = SYSTEMS.NextRock
-            SYSTEMS.NextRock = nil
-            print(string.format("🎯 Menggunakan target yang sudah dipersiapkan: %s", 
-                targetRock.Name))
-        else
-            -- Cari target baru
-            targetRock = findNextRock(SYSTEMS.CurrentRock)
-        end
-        
-        -- Proses mining
-        if targetRock then
-            mineRock(targetRock)
-        else
-            print("⏳ Tidak ada rock yang tersedia, rescan...")
-            wait(2)
-        end
-        
-        -- Periodic rescan
-        if tick() - SYSTEMS.Cache.LastUpdate > CONFIG.ScanInterval then
-            task.spawn(scanWorkspace)
-        end
-    end
-    
-    -- Restore character state saat berhenti
-    local character = localPlayer.Character
-    if character then
-        restoreCharacter(character)
-    end
+	if (not toolActivatedRF) or (not toolActivatedRF.Parent) then
+		ResolveToolActivated()
+	end
+	if not toolActivatedRF then return end
+
+	task.spawn(function()
+		pcall(function()
+			toolActivatedRF:InvokeServer("Pickaxe")
+		end)
+	end)
 end
 
--- ===================== UTILITY FUNCTIONS =====================
+-- ========= TARGET PART PICKER =========
+local function PickTargetPartFromRockModel(rockModel)
+	local pp = rockModel.PrimaryPart
+	if pp and pp:IsA("BasePart") then return pp end
 
-local function countTable(tbl, value)
-    if not tbl then return 0 end
-    
-    local count = 0
-    if value ~= nil then
-        for _, v in pairs(tbl) do
-            if v == value then
-                count = count + 1
-            end
-        end
-    else
-        for _ in pairs(tbl) do
-            count = count + 1
-        end
-    end
-    
-    return count
+	local hb = rockModel:FindFirstChild("Hitbox")
+	if hb and hb:IsA("BasePart") then return hb end
+
+	for _, inst in ipairs(rockModel:GetDescendants()) do
+		if inst:IsA("BasePart") then
+			return inst
+		end
+	end
+	return nil
 end
 
--- ===================== PUBLIC API =====================
--- Interface untuk GUI
-
-local AutoMiner = {}
-
--- 1. SAKLAR AUTO MINING
-function AutoMiner.start()
-    if SYSTEMS.MiningActive then
-        warn("⚠️ Auto mining sudah aktif!")
-        return
-    end
-    
-    SYSTEMS.MiningActive = true
-    
-    -- Setup mining remote
-    getMiningRemote()
-    
-    -- Initial scan
-    scanWorkspace()
-    
-    -- Start mining loop
-    SYSTEMS.Connection = RunService.Heartbeat:Connect(function()
-        if SYSTEMS.MiningActive then
-            miningLoop()
-        end
-    end)
-    
-    print("🚀 Auto Mining System Started")
-    print(string.format("⚙️ Tween Speed: %d (Actual: %d studs/sec)", 
-        CONFIG.TweenSpeed, CONFIG.TweenSpeed * 2))
-    print(string.format("⚙️ Y Offset: %d studs", CONFIG.YOffset))
-    print(string.format("⚙️ Mining Interval: %.2f sec", CONFIG.MiningInterval))
+-- ========= TARGET VALIDATION =========
+local function RockHasGoodOre(rockModel)
+	for _, child in ipairs(rockModel:GetChildren()) do
+		if child.Name == "Ore" then
+			local oreType = child:GetAttribute("Ore")
+			if oreType and Settings.Ores[oreType] then
+				return true
+			end
+		end
+	end
+	return false
 end
 
-function AutoMiner.stop()
-    SYSTEMS.MiningActive = false
-    SYSTEMS.CurrentRock = nil
-    SYSTEMS.NextRock = nil
-    
-    if SYSTEMS.Connection then
-        SYSTEMS.Connection:Disconnect()
-        SYSTEMS.Connection = nil
-    end
-    
-    -- Restore character
-    local character = localPlayer.Character
-    if character then
-        restoreCharacter(character)
-    end
-    
-    print("🛑 Auto mining stopped.")
+local function IsRockValid(rockModel)
+	local hp = rockModel:GetAttribute("Health")
+	if hp and hp <= 0 then return false end
+
+	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
+	local curHP = hp or maxHP
+	local pct = (maxHP > 0) and ((curHP / maxHP) * 100) or 100
+
+	if pct > (Settings.CheckThreshold or 45) then
+		return true
+	end
+	return RockHasGoodOre(rockModel)
 end
 
-function AutoMiner.isActive()
-    return SYSTEMS.MiningActive
+-- ========= MOVE (CENTER-ON-ROCK, SPEED ONLY) =========
+local activeTween = nil
+
+local function TweenToPart(targetPart)
+	if not (targetPart and targetPart.Parent) then return false end
+	local c, r = GetCharAndRoot()
+	if not (c and r and r.Parent) then return false end
+
+	enableNoclip()
+
+	local rockPos = targetPart.Position
+	local myPos = r.Position
+	local dist = (rockPos - myPos).Magnitude
+
+	-- CENTER on rock (X/Z same as rock), YOffset only
+	local yOff = tonumber(Settings.YOffset) or 0
+	local targetPos = rockPos + Vector3.new(0, yOff, 0)
+
+	-- Speed-only
+	local speed = math.max(1, tonumber(Settings.TweenSpeed) or 40)
+	local duration = dist / speed
+	if duration < 0.01 then duration = 0.01 end
+
+	StopCameraStabilize()
+	StopLock()
+
+	if activeTween then pcall(function() activeTween:Cancel() end) end
+	activeTween = TweenService:Create(
+		r,
+		TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ CFrame = CFrame.new(targetPos) } -- no lookAt to avoid rotation jitter
+	)
+
+	activeTween:Play()
+	pcall(function() activeTween.Completed:Wait() end)
+
+	-- HARD lock at exact center position
+	local lockCF = CFrame.new(targetPos)
+	StartLock(r, lockCF)
+	StartCameraStabilize()
+
+	disableNoclip()
+	return true
 end
 
--- 2. SLIDER TWEEN SPEED (20-80)
-function AutoMiner.setTweenSpeed(speed)
-    CONFIG.TweenSpeed = math.clamp(speed, 20, 80)
-    print(string.format("⚙️ Tween Speed diatur: %d", CONFIG.TweenSpeed))
-    return CONFIG.TweenSpeed
+-- ========= GET BEST TARGET (ALL ZONES/ROCKS LOGIC) =========
+local function GetBestTargetPart()
+	if not Settings.AutoFarm then return nil end
+
+	local c, r = GetCharAndRoot()
+	if not r then return nil end
+
+	local rocksFolder = Workspace:FindFirstChild("Rocks")
+	if not rocksFolder then return nil end
+
+	local zonesAny = select(1, boolCount(Settings.Zones))
+	local rocksAny = select(1, boolCount(Settings.Rocks))
+
+	local allowAllZones = (Settings.AllowAllZonesIfNoneSelected == true) and (not zonesAny)
+	local allowAllRocks = (Settings.AllowAllRocksIfNoneSelected == true) and (not rocksAny)
+
+	local myPos = r.Position
+	local closest, minDist = nil, math.huge
+
+	for _, zone in ipairs(rocksFolder:GetChildren()) do
+		if zone:IsA("Folder") then
+			local zoneOk = allowAllZones or Settings.Zones[zone.Name]
+			if zoneOk then
+				-- Descendants scan [web:154]
+				for _, inst in ipairs(zone:GetDescendants()) do
+					if inst:IsA("Model") then
+						local rockOk = allowAllRocks or Settings.Rocks[inst.Name]
+						if rockOk and IsRockValid(inst) then
+							local part = PickTargetPartFromRockModel(inst)
+							if part then
+								local d = (myPos - part.Position).Magnitude
+								if d < minDist then
+									minDist = d
+									closest = part
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return closest
 end
 
-function AutoMiner.getTweenSpeed()
-    return CONFIG.TweenSpeed
-end
+-- ========= MAIN LOOP =========
+local lastScan = 0
+local lockedTarget = nil
+local lockedUntil = 0
 
--- 3. SLIDER Y OFFSET (-7 sampai 7)
-function AutoMiner.setYOffset(offset)
-    CONFIG.YOffset = math.clamp(offset, -7, 7)
-    print(string.format("⚙️ Y Offset diatur: %d", CONFIG.YOffset))
-    return CONFIG.YOffset
-end
+task.spawn(function()
+	D("LOOP", "Main loop started")
+	while _G.FarmLoop ~= false do
+		task.wait(0.05)
 
-function AutoMiner.getYOffset()
-    return CONFIG.YOffset
-end
+		if not Settings.AutoFarm then
+			StopCameraStabilize()
+			StopLock()
+			task.wait(0.2)
+			continue
+		end
 
--- Filter Configuration
-function AutoMiner.setFilter(category, name, value)
-    if SYSTEMS.Filter[category] then
-        SYSTEMS.Filter[category][name] = value
-        updateFilterStatus()
-        return true
-    end
-    return false
-end
+		local c, r = GetCharAndRoot()
+		if not (c and r) then
+			StopCameraStabilize()
+			StopLock()
+			task.wait(0.35)
+			continue
+		end
 
-function AutoMiner.getFilter(category, name)
-    if SYSTEMS.Filter[category] then
-        return SYSTEMS.Filter[category][name]
-    end
-    return nil
-end
+		local now = os.clock()
+		if lockedTarget and lockedTarget.Parent and now < lockedUntil then
+			-- keep
+		else
+			if (now - lastScan) >= (Settings.ScanInterval or 0.25) then
+				lastScan = now
+				lockedTarget = GetBestTargetPart()
+				lockedUntil = now + (Settings.TargetStickTime or 0.35)
+			end
+		end
 
-function AutoMiner.getFilterStatus()
-    return {
-        isActive = SYSTEMS.Filter.IsActive,
-        zones = countTable(SYSTEMS.Filter.Zones, true),
-        rocks = countTable(SYSTEMS.Filter.Rocks, true),
-        ores = countTable(SYSTEMS.Filter.Ores, true)
-    }
-end
+		if lockedTarget and lockedTarget.Parent then
+			TweenToPart(lockedTarget)
 
-function AutoMiner.getDataLists()
-    return {
-        Zones = DATA.Zones,
-        Rocks = DATA.Rocks,
-        Ores = DATA.Ores
-    }
-end
+			local rockModel = lockedTarget:FindFirstAncestorOfClass("Model")
+			if rockModel then
+				local hp = rockModel:GetAttribute("Health")
+				if not hp or hp > 0 then
+					HitPickaxe()
+				end
+			end
 
--- Stats and Info
-function AutoMiner.getStats()
-    local rockCount = 0
-    for _, rocks in pairs(SYSTEMS.Cache.ZoneRocks) do
-        rockCount = rockCount + #rocks
-    end
-    
-    return {
-        miningActive = SYSTEMS.MiningActive,
-        tweenSpeed = CONFIG.TweenSpeed,
-        yOffset = CONFIG.YOffset,
-        miningInterval = CONFIG.MiningInterval,
-        zones = countTable(SYSTEMS.Cache.Zones),
-        rocks = rockCount,
-        filterActive = SYSTEMS.Filter.IsActive,
-        currentRock = SYSTEMS.CurrentRock and SYSTEMS.CurrentRock.Name or "None",
-        nextRock = SYSTEMS.NextRock and SYSTEMS.NextRock.Name or "None",
-        avgDamage = SYSTEMS.Predictor.AverageDamage
-    }
-end
+			task.wait(0.08)
+		else
+			StopCameraStabilize()
+			StopLock()
+			task.wait(0.12)
+		end
+	end
 
--- Mining Control
-function AutoMiner.rescan()
-    return scanWorkspace()
-end
+	if activeTween then pcall(function() activeTween:Cancel() end) end
+	StopCameraStabilize()
+	StopLock()
+	disableNoclip()
+end)
 
--- Swing Prediction
-function AutoMiner.getSwingStats()
-    return {
-        averageDamage = SYSTEMS.Predictor.AverageDamage,
-        sampleCount = #SYSTEMS.Predictor.Samples,
-        rockDataCount = countTable(SYSTEMS.Predictor.RockData)
-    }
-end
-
-function AutoMiner.resetPrediction()
-    SYSTEMS.Predictor = {
-        Samples = {},
-        RockData = {},
-        AverageDamage = 20
-    }
-    print("✅ Swing prediction data direset")
-end
-
--- Debug
-function AutoMiner.printStatus()
-    print("=== MINING STATUS ===")
-    print(string.format("Aktif: %s", SYSTEMS.MiningActive and "YA" or "TIDAK"))
-    print(string.format("Rock saat ini: %s", 
-        SYSTEMS.CurrentRock and SYSTEMS.CurrentRock.Name or "None"))
-    print(string.format("Target berikutnya: %s", 
-        SYSTEMS.NextRock and SYSTEMS.NextRock.Name or "None"))
-    print(string.format("Tween Speed: %d", CONFIG.TweenSpeed))
-    print(string.format("Y Offset: %d", CONFIG.YOffset))
-    
-    local stats = AutoMiner.getSwingStats()
-    print(string.format("Prediksi Swing - Avg Damage: %d, Samples: %d", 
-        stats.averageDamage, stats.sampleCount))
-end
-
-return AutoMiner
+print("[✓] Forge Core Loaded Successfully! (CENTER + HARDLOCK + CAMERA STABLE)")
