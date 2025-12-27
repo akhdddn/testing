@@ -1,12 +1,6 @@
 -- ReplicatedStorage/ForgeCore (ModuleScript)
--- FULL: TweenSpeed = studs/sec (always tween when moving) + MULTI-ORE FIX
--- + CAMERA FIX: player can still rotate/zoom camera while mining (uses Humanoid.CameraOffset, NOT Scriptable cam)
--- + PATCH (Solusi 2): CameraOffset di-lerp per frame untuk mengurangi kamera maju-mundur
---
--- Notes:
--- - CameraStabilize now means "apply CameraOffset while mining/locked" (camera remains Custom).
--- - CameraOffsetMode is not used anymore (kept for compatibility with settings; ignored).
--- - If your offset feels inverted, change CameraOffset Z to negative in ForgeSettings (e.g. Vector3.new(0,10,-18)).
+-- OPT+ : non-blocking tween, ore cache-safe validation, squared distance, debounced ore refresh,
+--        throttled remote resolve, cleanup-on-transition (tanpa ubah logic)
 
 local M = {}
 
@@ -19,7 +13,7 @@ function M.Start(Settings, DATA)
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 	local Player = Players.LocalPlayer
-	local CAMERA_BIND_NAME = "Forge_CameraFollow_Optim" -- kept for compatibility
+	local CAMERA_BIND_NAME = "Forge_CameraFollow_Optim" -- compatibility
 
 	-- ========= DEBUG =========
 	_G.ForgeDebug = (_G.ForgeDebug ~= nil) and _G.ForgeDebug or false
@@ -31,6 +25,13 @@ function M.Start(Settings, DATA)
 		else
 			warn(pfx .. msg)
 		end
+	end
+
+	local function clamp01(x)
+		if type(x) ~= "number" then return 0 end
+		if x < 0 then return 0 end
+		if x > 1 then return 1 end
+		return x
 	end
 
 	local function boolCount(map)
@@ -143,10 +144,7 @@ function M.Start(Settings, DATA)
 		cacheCharacterParts(c)
 	end)
 
-	-- ========= CAMERA (FIX: allow player control) =========
-	-- Instead of Scriptable camera + forcing CFrame each frame (which locks mouse look),
-	-- we apply Humanoid.CameraOffset while mining/locked, keeping CameraType.Custom.
-	-- PATCH (Solusi 2): CameraOffset di-lerp per frame (RenderStep) supaya tidak memicu kamera maju-mundur.
+	-- ========= CAMERA (CameraOffset LERP) =========
 	local prevCamType = nil
 	local prevHumCamOffset = nil
 	local cameraApplied = false
@@ -154,7 +152,6 @@ function M.Start(Settings, DATA)
 	local camOffsetGoal = nil
 
 	local function bindCameraOffsetLerp()
-		-- Pastikan tidak double-bind
 		pcall(function()
 			RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
 		end)
@@ -162,7 +159,6 @@ function M.Start(Settings, DATA)
 		RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function()
 			local hum = GetHumanoid()
 			if not hum then
-				-- Character/humanoid hilang, cleanup supaya tidak nyangkut
 				pcall(function()
 					RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
 				end)
@@ -178,11 +174,10 @@ function M.Start(Settings, DATA)
 
 			local alpha = Settings.CameraOffsetLerpAlpha
 			if type(alpha) ~= "number" then alpha = 0.15 end
-			alpha = math.clamp(alpha, 0, 1)
+			alpha = clamp01(alpha)
 
 			hum.CameraOffset = hum.CameraOffset:Lerp(camOffsetGoal, alpha)
 
-			-- Jika sedang restore: ketika sudah dekat goal, snap + unbind
 			if cameraRestoring then
 				local diff = (hum.CameraOffset - camOffsetGoal).Magnitude
 				local eps = Settings.CameraOffsetRestoreEps
@@ -205,7 +200,6 @@ function M.Start(Settings, DATA)
 	end
 
 	local function StopCameraStabilize()
-		-- Jika tidak pernah apply, cukup unbind (jaga-jaga kompatibilitas)
 		if not cameraApplied then
 			pcall(function()
 				RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
@@ -215,13 +209,11 @@ function M.Start(Settings, DATA)
 			return
 		end
 
-		-- Restore CameraType langsung
 		local cam = Workspace.CurrentCamera
 		if cam and prevCamType then
 			cam.CameraType = prevCamType
 		end
 
-		-- Restore offset secara halus menuju offset sebelumnya
 		camOffsetGoal = prevHumCamOffset or Vector3.zero
 		cameraRestoring = true
 		bindCameraOffsetLerp()
@@ -245,18 +237,27 @@ function M.Start(Settings, DATA)
 
 		cameraRestoring = false
 		cam.CameraType = Enum.CameraType.Custom
-
-		-- Goal offset while mining/locked (dikejar dengan lerp)
 		camOffsetGoal = Settings.CameraOffset or Vector3.new(0, 10, 18)
 		bindCameraOffsetLerp()
 	end
 
-	-- ========= TOOL REMOTE =========
+	-- ========= TOOL REMOTE (throttled resolve attempts) =========
 	local toolActivatedRF = nil
 	local lastHit = 0
+	local lastResolveAttempt = 0
+	local RESOLVE_COOLDOWN = 2.0
 
 	local function ResolveToolActivated()
-		if toolActivatedRF and toolActivatedRF.Parent then return toolActivatedRF end
+		if toolActivatedRF and toolActivatedRF.Parent then
+			return toolActivatedRF
+		end
+
+		local now = os.clock()
+		if (now - lastResolveAttempt) < RESOLVE_COOLDOWN then
+			return nil
+		end
+		lastResolveAttempt = now
+
 		local ok, res = pcall(function()
 			return ReplicatedStorage:WaitForChild("Shared", 5)
 				:WaitForChild("Packages", 5)
@@ -359,7 +360,6 @@ function M.Start(Settings, DATA)
 	end
 
 	-- ========= MULTI-ORE READER =========
-	-- Returns array list: {"Iron","Crimsonite",...} (may be empty)
 	local function GetOreTypes(rockModel)
 		local set = {}
 
@@ -396,8 +396,11 @@ function M.Start(Settings, DATA)
 		return select(1, boolCount(Settings.Ores))
 	end
 
-	local function RockMatchesOreSelection(rockModel, oreTypes)
-		local anySelected = AnyOreSelected()
+	-- anySelected di-pass biar tidak boolCount berulang
+	local function RockMatchesOreSelection(rockModel, oreTypes, anySelected)
+		if anySelected == nil then
+			anySelected = AnyOreSelected()
+		end
 
 		if (not anySelected) and (Settings.AllowAllOresIfNoneSelected == true) then
 			return true
@@ -435,7 +438,7 @@ function M.Start(Settings, DATA)
 		return hp > 0
 	end
 
-	-- Watchers to keep oreTypes cache updated
+	-- ========= ORE WATCHERS (DEBOUNCED) =========
 	local function disconnectOreConns(entry)
 		if entry._oreConns then
 			for _, c in ipairs(entry._oreConns) do
@@ -445,37 +448,46 @@ function M.Start(Settings, DATA)
 		entry._oreConns = {}
 	end
 
+	local function scheduleOreRefresh(rockModel, entry)
+		-- debounce: hanya 1 refresh dalam window kecil
+		if entry._oreRefreshQueued then return end
+		entry._oreRefreshQueued = true
+		task.delay(0.05, function()
+			entry._oreRefreshQueued = false
+			if not (rockModel and rockModel.Parent) then return end
+			entry.oreTypes = GetOreTypes(rockModel)
+		end)
+	end
+
 	local function bindOreWatchers(rockModel, entry)
 		disconnectOreConns(entry)
 
-		-- fallback attribute on rockModel
 		table.insert(entry._oreConns, rockModel:GetAttributeChangedSignal("Ore"):Connect(function()
-			entry.oreTypes = GetOreTypes(rockModel)
+			scheduleOreRefresh(rockModel, entry)
 		end))
 
-		-- bind all current ore nodes
-		for _, inst in ipairs(rockModel:GetDescendants()) do
-			if inst.Name == "Ore" then
-				if inst:IsA("Model") or inst:IsA("Folder") then
-					table.insert(entry._oreConns, inst:GetAttributeChangedSignal("Ore"):Connect(function()
-						entry.oreTypes = GetOreTypes(rockModel)
-					end))
-				elseif inst:IsA("StringValue") then
-					table.insert(entry._oreConns, inst.Changed:Connect(function()
-						entry.oreTypes = GetOreTypes(rockModel)
-					end))
-				end
+		-- watch descendants but refresh debounced (lebih murah daripada rebind+GetDescendants tiap event)
+		table.insert(entry._oreConns, rockModel.DescendantAdded:Connect(function(inst)
+			if inst and inst.Name == "Ore" then
+				scheduleOreRefresh(rockModel, entry)
 			end
-		end
+		end))
+		table.insert(entry._oreConns, rockModel.DescendantRemoving:Connect(function(inst)
+			if inst and inst.Name == "Ore" then
+				scheduleOreRefresh(rockModel, entry)
+			end
+		end))
+
+		-- initial snapshot
+		entry.oreTypes = GetOreTypes(rockModel)
 	end
 
 	local function UpsertRock(model, zoneName)
-		if RockIndex.byModel[model] then
-			local e = RockIndex.byModel[model]
-			e.zoneName = zoneName or e.zoneName
-			e.part = e.part and e.part.Parent and e.part or PickTargetPartFromRockModel(model)
-			e.oreTypes = GetOreTypes(model)
-			bindOreWatchers(model, e)
+		local existing = RockIndex.byModel[model]
+		if existing then
+			existing.zoneName = zoneName or existing.zoneName
+			existing.part = existing.part and existing.part.Parent and existing.part or PickTargetPartFromRockModel(model)
+			bindOreWatchers(model, existing)
 			return
 		end
 
@@ -483,22 +495,22 @@ function M.Start(Settings, DATA)
 			model = model,
 			zoneName = zoneName or "UnknownZone",
 			part = PickTargetPartFromRockModel(model),
-			oreTypes = GetOreTypes(model),
+			oreTypes = {},
 			_oreConns = {},
+			_oreRefreshQueued = false,
 		}
 
 		RockIndex.byModel[model] = entry
 		table.insert(RockIndex.entries, entry)
 
-		-- children changes can add/remove ore nodes -> refresh & rebind
-		model.ChildAdded:Connect(function()
-			entry.oreTypes = GetOreTypes(model)
-			bindOreWatchers(model, entry)
-		end)
-		model.ChildRemoved:Connect(function()
-			entry.oreTypes = GetOreTypes(model)
-			bindOreWatchers(model, entry)
-		end)
+		-- children change can affect ore graph; just schedule refresh (debounced)
+		-- (kita tetap bind watchers agar cache update jalan)
+		table.insert(entry._oreConns, model.ChildAdded:Connect(function()
+			scheduleOreRefresh(model, entry)
+		end))
+		table.insert(entry._oreConns, model.ChildRemoved:Connect(function()
+			scheduleOreRefresh(model, entry)
+		end))
 
 		bindOreWatchers(model, entry)
 	end
@@ -758,7 +770,7 @@ function M.Start(Settings, DATA)
 		end
 	end
 
-	-- ========= TARGET SELECTION =========
+	-- ========= TARGET SELECTION (squared distance) =========
 	local function GetBestTargetPart()
 		if not Settings.AutoFarm then return nil end
 		local _, r = GetCharAndRoot()
@@ -766,12 +778,13 @@ function M.Start(Settings, DATA)
 
 		local zonesAny = select(1, boolCount(Settings.Zones))
 		local rocksAny = select(1, boolCount(Settings.Rocks))
+		local anyOreSelected = select(1, boolCount(Settings.Ores))
 
 		local allowAllZones = (Settings.AllowAllZonesIfNoneSelected == true) and (not zonesAny)
 		local allowAllRocks = (Settings.AllowAllRocksIfNoneSelected == true) and (not rocksAny)
 
 		local myPos = r.Position
-		local closestPart, minDist = nil, math.huge
+		local closestPart, minDist2 = nil, math.huge
 
 		for _, e in ipairs(RockIndex.entries) do
 			local model = e.model
@@ -779,7 +792,7 @@ function M.Start(Settings, DATA)
 				if allowAllZones or Settings.Zones[e.zoneName] == true then
 					if allowAllRocks or Settings.Rocks[model.Name] == true then
 						if RockIsAllowed(model) then
-							if RockMatchesOreSelection(model, e.oreTypes) then
+							if RockMatchesOreSelection(model, e.oreTypes, anyOreSelected) then
 								if IsRockAliveEnough(model) then
 									local part = e.part
 									if not (part and part.Parent) then
@@ -787,9 +800,10 @@ function M.Start(Settings, DATA)
 										e.part = part
 									end
 									if part and part.Parent then
-										local d = (myPos - part.Position).Magnitude
-										if d < minDist then
-											minDist = d
+										local d = myPos - part.Position
+										local d2 = d:Dot(d)
+										if d2 < minDist2 then
+											minDist2 = d2
 											closestPart = part
 										end
 									end
@@ -809,12 +823,17 @@ function M.Start(Settings, DATA)
 	local currentTargetPart = nil
 	local lastTweenSpeedUsed = nil
 	local lastGoalPos = nil
+	local tweenToken = 0
+	local pendingLockCF = nil
+	local pendingLockTargetPart = nil
 
 	local function CancelTween()
 		if activeTween then
 			pcall(function() activeTween:Cancel() end)
 		end
 		activeTween = nil
+		pendingLockCF = nil
+		pendingLockTargetPart = nil
 	end
 
 	local function MakeMiningLockCF(targetPart)
@@ -831,6 +850,16 @@ function M.Start(Settings, DATA)
 		end
 
 		return targetPos, lockCF
+	end
+
+	local function ApplyLockedState(rootPart, lockCF)
+		StartLock(rootPart, lockCF)
+		StartCameraStabilize()
+		if Settings.KeepNoclipWhileLocked then
+			enableNoclip()
+		else
+			disableNoclip()
+		end
 	end
 
 	local function EnsureAtPart(targetPart)
@@ -862,9 +891,7 @@ function M.Start(Settings, DATA)
 			lastGoalPos = targetPos
 			lastTweenSpeedUsed = tonumber(Settings.TweenSpeed) or lastTweenSpeedUsed
 
-			StartLock(r, lockCF)
-			StartCameraStabilize()
-			if Settings.KeepNoclipWhileLocked then enableNoclip() else disableNoclip() end
+			ApplyLockedState(r, lockCF)
 			return true
 		end
 
@@ -875,6 +902,7 @@ function M.Start(Settings, DATA)
 		local sameSpeed = (lastTweenSpeedUsed == speed)
 		local sameGoal = (lastGoalPos ~= nil) and ((lastGoalPos - targetPos).Magnitude < 0.05)
 
+		-- jika tween masih relevan, cukup noclip dan biarkan tween jalan (non-blocking)
 		if activeTween and sameTarget and sameSpeed and sameGoal then
 			enableNoclip()
 			return false
@@ -889,66 +917,89 @@ function M.Start(Settings, DATA)
 		StopLock()
 		CancelTween()
 
+		tweenToken += 1
+		local myToken = tweenToken
+
+		pendingLockCF = lockCF
+		pendingLockTargetPart = targetPart
+
 		activeTween = TweenService:Create(
 			r,
 			TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
 			{ CFrame = CFrame.new(targetPos) }
 		)
+
+		activeTween.Completed:Connect(function()
+			-- pastikan ini tween terbaru dan state masih cocok
+			if myToken ~= tweenToken then return end
+			activeTween = nil
+
+			local tp = pendingLockTargetPart
+			local cf = pendingLockCF
+			pendingLockTargetPart = nil
+			pendingLockCF = nil
+
+			if not (tp and tp.Parent) then return end
+			local _, rr = GetCharAndRoot()
+			if not (rr and rr.Parent and cf) then return end
+
+			ApplyLockedState(rr, cf)
+		end)
+
 		activeTween:Play()
-
-		pcall(function() activeTween.Completed:Wait() end)
-		activeTween = nil
-
-		if not (targetPart and targetPart.Parent) then return false end
-		local _, rr = GetCharAndRoot()
-		if not (rr and rr.Parent) then return false end
-
-		StartLock(rr, lockCF)
-		StartCameraStabilize()
-		if Settings.KeepNoclipWhileLocked then enableNoclip() else disableNoclip() end
-		return true
+		return false
 	end
 
-	-- ========= MAIN LOOP =========
+	-- ========= MAIN LOOP (cleanup on transition) =========
 	local lastScan = 0
 	local lockedTarget = nil
 	local lockedUntil = 0
 
+	local wasActive = false
+	local hadChar = false
+
+	local function FullCleanup()
+		currentTargetPart = nil
+		lockedTarget = nil
+		CancelTween()
+		StopCameraStabilize()
+		StopLock()
+		disableNoclip()
+		lastTweenSpeedUsed = nil
+		lastGoalPos = nil
+	end
+
 	task.spawn(function()
-		D("LOOP", "Main loop started (OPT)")
+		D("LOOP", "Main loop started (OPT+)")
 
 		while _G.FarmLoop ~= false do
 			task.wait(0.03)
 
-			if not Settings.AutoFarm then
-				currentTargetPart = nil
-				lockedTarget = nil
-				CancelTween()
-				StopCameraStabilize()
-				StopLock()
-				disableNoclip()
-				lastTweenSpeedUsed = nil
-				lastGoalPos = nil
+			local active = Settings.AutoFarm == true
+			if not active then
+				if wasActive then
+					FullCleanup()
+				end
+				wasActive = false
 				task.wait(0.15)
 				continue
 			end
+			wasActive = true
 
 			local _, r = GetCharAndRoot()
 			if not r then
-				currentTargetPart = nil
-				lockedTarget = nil
-				CancelTween()
-				StopCameraStabilize()
-				StopLock()
-				disableNoclip()
-				lastTweenSpeedUsed = nil
-				lastGoalPos = nil
+				if hadChar then
+					FullCleanup()
+				end
+				hadChar = false
 				task.wait(0.25)
 				continue
 			end
+			hadChar = true
 
 			local now = os.clock()
 
+			-- validate lockedTarget (ore check pakai cache jika ada)
 			local targetInvalid = (not lockedTarget) or (not lockedTarget.Parent)
 			if not targetInvalid then
 				local rockModel = lockedTarget:FindFirstAncestorOfClass("Model")
@@ -959,11 +1010,15 @@ function M.Start(Settings, DATA)
 					if hp and hp <= 0 then
 						targetInvalid = true
 					end
+
 					if (not targetInvalid) and (not RockIsAllowed(rockModel)) then
 						targetInvalid = true
 					end
+
 					if (not targetInvalid) and Settings.RequireOreMatchWhenSelected and AnyOreSelected() then
-						if not RockMatchesOreSelection(rockModel, GetOreTypes(rockModel)) then
+						local e = RockIndex.byModel[rockModel]
+						local cached = e and e.oreTypes or nil
+						if not RockMatchesOreSelection(rockModel, cached or GetOreTypes(rockModel), true) then
 							targetInvalid = true
 						end
 					end
@@ -978,9 +1033,8 @@ function M.Start(Settings, DATA)
 				lastGoalPos = nil
 			end
 
-			if lockedTarget and now < lockedUntil then
-				-- stick
-			else
+			-- stick / scan
+			if not (lockedTarget and now < lockedUntil) then
 				if (now - lastScan) >= (Settings.ScanInterval or 0.12) then
 					lastScan = now
 					lockedTarget = GetBestTargetPart()
@@ -1000,6 +1054,7 @@ function M.Start(Settings, DATA)
 					end
 				end
 			else
+				-- idle: jangan spam cleanup berat; cukup state lock/cam/noclip
 				CancelTween()
 				StopCameraStabilize()
 				StopLock()
@@ -1008,13 +1063,10 @@ function M.Start(Settings, DATA)
 			end
 		end
 
-		CancelTween()
-		StopCameraStabilize()
-		StopLock()
-		disableNoclip()
+		FullCleanup()
 	end)
 
-	print("[✓] Forge Core OPT Loaded! (TweenSpeed=studs/sec + Multi-Ore + Camera control fix)")
+	print("[✓] Forge Core OPT+ Loaded! (Non-blocking tween + Debounced ore + Squared dist)")
 end
 
 return M
