@@ -1,33 +1,104 @@
--- lprxsw - Old Style GUI (Mobile + PC optimized)
--- NOTE: UI only (no gameplay automation)
+-- ForgeUI_Compat.lua (LocalScript)
+-- Compatible with:
+-- 1) Old UI-only script behavior (fallback)
+-- 2) ReplicatedStorage/ForgeSettings + ReplicatedStorage/ForgeCore split system
 
+-- ========= SERVICES =========
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
-local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- ========= State (UI only) =========
-local UIState = {
-	AutoMining = false,
-	TweenSpeed = 55, -- 20..80
-	YOffset = 3,     -- -7..7
-	Zones = {},
-	Rocks = {},
-	Ores  = {},
-	Data = {
+-- ========= FIND MODULES (SAFE) =========
+local function findFirstDescendantByName(root, name)
+	local inst = root:FindFirstChild(name)
+	if inst then return inst end
+	for _, d in ipairs(root:GetDescendants()) do
+		if d.Name == name then
+			return d
+		end
+	end
+	return nil
+end
+
+local ForgeSettingsMS = findFirstDescendantByName(ReplicatedStorage, "ForgeSettings")
+local ForgeCoreMS = findFirstDescendantByName(ReplicatedStorage, "ForgeCore")
+
+-- ========= RESOLVE SETTINGS/DATA =========
+local Settings, DATA
+local usingModules = false
+
+if ForgeSettingsMS and ForgeSettingsMS:IsA("ModuleScript") then
+	local ok, mod = pcall(require, ForgeSettingsMS)
+	if ok and type(mod) == "table" and type(mod.ApplyToGlobals) == "function" then
+		local s, d = mod.ApplyToGlobals()
+		if type(s) == "table" and type(d) == "table" then
+			Settings, DATA = s, d
+			usingModules = true
+		end
+	end
+end
+
+-- UI-only fallback (still compatible with old UI intent)
+if not Settings then
+	_G.Settings = _G.Settings or {}
+	Settings = _G.Settings
+
+	Settings.AutoFarm = (Settings.AutoFarm ~= nil) and Settings.AutoFarm or false
+	Settings.TweenSpeed = tonumber(Settings.TweenSpeed) or 55
+	Settings.YOffset = tonumber(Settings.YOffset) or 3
+
+	Settings.Zones = Settings.Zones or {}
+	Settings.Rocks = Settings.Rocks or {}
+	Settings.Ores  = Settings.Ores  or {}
+
+	DATA = _G.DATA or {
 		Zones = {"ZoneA","ZoneB","ZoneC"},
 		Rocks = {"RockA","RockB","RockC"},
 		Ores  = {"OreA","OreB","OreC"},
 	}
-}
+	_G.DATA = DATA
+end
 
--- If you have your own data table, assign it here:
--- UIState.Data = { Zones = {...}, Rocks = {...}, Ores = {...} }
+-- Ensure map tables contain keys for DATA lists (important even with modules if someone edits DATA)
+local function ensureMap(map, list)
+	if type(map) ~= "table" then return end
+	if type(list) ~= "table" then return end
+	for _, name in ipairs(list) do
+		if map[name] == nil then map[name] = false end
+	end
+end
 
--- ========= Utils =========
+ensureMap(Settings.Zones, DATA.Zones)
+ensureMap(Settings.Rocks, DATA.Rocks)
+ensureMap(Settings.Ores,  DATA.Ores)
+
+-- ========= OPTIONAL: START CORE ON DEMAND =========
+local coreStarted = false
+local function ensureCoreStarted()
+	if coreStarted then return end
+	if not (ForgeCoreMS and ForgeCoreMS:IsA("ModuleScript")) then
+		coreStarted = true -- mark to avoid re-tries spam
+		return
+	end
+
+	local ok, core = pcall(require, ForgeCoreMS)
+	if ok and type(core) == "table" and type(core.Start) == "function" then
+		coreStarted = true
+		task.spawn(function()
+			pcall(function()
+				core.Start(Settings, DATA)
+			end)
+		end)
+	else
+		coreStarted = true
+	end
+end
+
+-- ========= UI FLAGS =========
 local isMobile = UserInputService.TouchEnabled and (not UserInputService.KeyboardEnabled)
 
 local function clamp(x,a,b)
@@ -41,17 +112,7 @@ local function roundStep(x, step)
 	return math.floor((x / step) + 0.5) * step
 end
 
-local function ensureMap(map, list)
-	for _, name in ipairs(list) do
-		if map[name] == nil then map[name] = false end
-	end
-end
-
-ensureMap(UIState.Zones, UIState.Data.Zones)
-ensureMap(UIState.Rocks, UIState.Data.Rocks)
-ensureMap(UIState.Ores,  UIState.Data.Ores)
-
--- ========= Theme (old style red/dark) =========
+-- ========= THEME =========
 local WHITE = Color3.fromRGB(255,255,255)
 local THEME = {
 	MainBg = Color3.fromRGB(15, 15, 15),
@@ -77,7 +138,7 @@ local THEME = {
 local FONT_MULT = isMobile and 2.2 or 2
 local function FS(n) return math.floor(n * FONT_MULT + 0.5) end
 
--- ========= Connection manager =========
+-- ========= CONNECTION MANAGER =========
 local running = true
 local globalCons = {}
 local tabCons = {}
@@ -94,7 +155,7 @@ local function disconnectAll(scope)
 	table.clear(scope)
 end
 
--- ========= UI helpers =========
+-- ========= UI HELPERS =========
 local function uiCorner(parent, radius)
 	local c = Instance.new("UICorner")
 	c.CornerRadius = UDim.new(0, radius)
@@ -113,12 +174,13 @@ end
 local function mkLabel(parent, text, baseSize, bold)
 	local lb = Instance.new("TextLabel")
 	lb.BackgroundTransparency = 1
-	lb.Text = text
-	lb.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
-	lb.TextSize = FS(baseSize)
+	lb.Text = text or ""
 	lb.TextColor3 = THEME.Text
-	lb.TextWrapped = true
+	lb.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+	lb.TextSize = FS(baseSize or 14)
 	lb.TextXAlignment = Enum.TextXAlignment.Left
+	lb.TextYAlignment = Enum.TextYAlignment.Center
+	lb.TextWrapped = true
 	lb.Parent = parent
 	return lb
 end
@@ -126,38 +188,38 @@ end
 local function mkButton(parent, text, baseSize)
 	local b = Instance.new("TextButton")
 	b.AutoButtonColor = false
-	b.Text = text
-	b.Font = Enum.Font.GothamBold
-	b.TextSize = FS(baseSize)
+	b.Text = text or ""
 	b.TextColor3 = THEME.Text
-	b.TextWrapped = true
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = FS(baseSize or 14)
 	b.BackgroundColor3 = THEME.Button
+	b.BorderSizePixel = 0
 	b.Parent = parent
 	return b
 end
 
 local function hover(btn, normal, over)
 	track(globalCons, btn.MouseEnter:Connect(function()
-		if not running then return end
-		btn.BackgroundColor3 = over
+		if running then btn.BackgroundColor3 = over end
 	end))
 	track(globalCons, btn.MouseLeave:Connect(function()
-		if not running then return end
-		btn.BackgroundColor3 = normal
+		if running then btn.BackgroundColor3 = normal end
 	end))
 end
 
--- ========= Root GUI =========
-local old = playerGui:FindFirstChild("lprxsw_OldStyle_GUI")
+-- ========= DESTROY PREVIOUS GUI =========
+local GUI_NAME = "ForgeUI_Compat"
+local old = playerGui:FindFirstChild(GUI_NAME)
 if old then old:Destroy() end
 
+-- ========= BUILD GUI ROOT =========
 local gui = Instance.new("ScreenGui")
-gui.Name = "lprxsw_OldStyle_GUI"
+gui.Name = GUI_NAME
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.Parent = playerGui
 
--- UIScale responsive
+-- Responsive UIScale (event-based)
 local UIScale = Instance.new("UIScale")
 UIScale.Parent = gui
 
@@ -176,19 +238,24 @@ local function refreshScale()
 	UIScale.Scale = computeScale()
 end
 
-refreshScale()
-track(globalCons, RunService.Heartbeat:Connect(function()
-	local cam = workspace.CurrentCamera
-	if not cam then return end
-	local vp = cam.ViewportSize
-	if gui:GetAttribute("vpX") ~= vp.X or gui:GetAttribute("vpY") ~= vp.Y then
-		gui:SetAttribute("vpX", vp.X)
-		gui:SetAttribute("vpY", vp.Y)
+do
+	local camConn = nil
+	local function bindCamera(cam)
+		if camConn then camConn:Disconnect() camConn = nil end
 		refreshScale()
+		if not cam then return end
+		camConn = cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+			if running then refreshScale() end
+		end)
+		track(globalCons, camConn)
 	end
-end))
+	bindCamera(workspace.CurrentCamera)
+	track(globalCons, workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+		bindCamera(workspace.CurrentCamera)
+	end))
+end
 
--- Floating restore button (used on minimize/hide)
+-- Floating restore button
 local FloatBtn = mkButton(gui, "Forge", 16)
 FloatBtn.Size = isMobile and UDim2.fromOffset(160, 64) or UDim2.fromOffset(140, 56)
 FloatBtn.AnchorPoint = Vector2.new(1, 1)
@@ -199,43 +266,35 @@ FloatBtn.ZIndex = 1000
 uiCorner(FloatBtn, 14)
 mkStroke(FloatBtn, 2)
 
--- Main window sizing
+-- Main window
 local TITLE_H = 120
 local TAB_W = isMobile and 280 or 240
+local BTN_W = (isMobile and 96 or 90)
 
 local MainFrame = Instance.new("Frame")
 MainFrame.BackgroundColor3 = THEME.MainBg
 MainFrame.BorderSizePixel = 0
-MainFrame.ClipsDescendants = true
+MainFrame.Size = isMobile and UDim2.fromOffset(980, 1180) or UDim2.fromOffset(980, 740)
+MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
 MainFrame.Parent = gui
-uiCorner(MainFrame, 10)
-mkStroke(MainFrame, 2, THEME.Accent)
+uiCorner(MainFrame, 18)
+mkStroke(MainFrame, 2)
 
-if isMobile then
-	MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-	MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
-	MainFrame.Size = UDim2.new(0.96, 0, 0.92, 0)
-else
-	local MAIN_W, MAIN_H = 980, 680
-	MainFrame.Size = UDim2.fromOffset(MAIN_W, MAIN_H)
-	MainFrame.Position = UDim2.new(0.5, -MAIN_W/2, 0.5, -MAIN_H/2)
-end
-
--- Title bar
 local TitleBar = Instance.new("Frame")
 TitleBar.Size = UDim2.new(1, 0, 0, TITLE_H)
 TitleBar.BackgroundColor3 = THEME.TitleBg
 TitleBar.BorderSizePixel = 0
 TitleBar.Parent = MainFrame
 TitleBar.Active = true
+uiCorner(TitleBar, 18)
+mkStroke(TitleBar, 1, THEME.Accent)
 
-local TitleLabel = mkLabel(TitleBar, "lprxsw - The Forge (UI)", 20, true)
-TitleLabel.Size = UDim2.new(1, -360, 1, 0)
+local titleText = usingModules and "The Forge (Core+Settings)" or "The Forge (UI Only)"
+local TitleLabel = mkLabel(TitleBar, ("Forge UI - %s"):format(titleText), 18, true)
+TitleLabel.Size = UDim2.new(1, -(BTN_W * 3 + 70), 1, 0)
 TitleLabel.Position = UDim2.new(0, 16, 0, 0)
 TitleLabel.Active = true
-
--- Buttons: Drag | Minimize | Close(X stop UI)
-local BTN_W = (isMobile and 96 or 90)
 
 local DragBtn = mkButton(TitleBar, "DRAG", 16)
 DragBtn.Size = UDim2.fromOffset(BTN_W, TITLE_H)
@@ -255,19 +314,24 @@ CloseBtn.Position = UDim2.new(1, -(BTN_W * 1), 0, 0)
 CloseBtn.BackgroundColor3 = Color3.fromRGB(150, 20, 20)
 uiCorner(CloseBtn, 8)
 
-TitleLabel.Size = UDim2.new(1, -(BTN_W * 3 + 70), 1, 0)
-
 hover(DragBtn, DragBtn.BackgroundColor3, THEME.ButtonHover)
 hover(MinimizeBtn, MinimizeBtn.BackgroundColor3, THEME.ButtonHover)
-hover(CloseBtn, CloseBtn.BackgroundColor3, Color3.fromRGB(200, 30, 30))
+hover(CloseBtn, CloseBtn.BackgroundColor3, THEME.ButtonHover)
 
--- Panels
+-- Body split
+local Body = Instance.new("Frame")
+Body.BackgroundTransparency = 1
+Body.Size = UDim2.new(1, 0, 1, -TITLE_H)
+Body.Position = UDim2.new(0, 0, 0, TITLE_H)
+Body.Parent = MainFrame
+
 local TabFrame = Instance.new("Frame")
-TabFrame.Size = UDim2.new(0, TAB_W, 1, -TITLE_H)
-TabFrame.Position = UDim2.new(0, 0, 0, TITLE_H)
 TabFrame.BackgroundColor3 = THEME.PanelBg
 TabFrame.BorderSizePixel = 0
-TabFrame.Parent = MainFrame
+TabFrame.Size = UDim2.new(0, TAB_W, 1, 0)
+TabFrame.Parent = Body
+uiCorner(TabFrame, 16)
+mkStroke(TabFrame, 1, THEME.Accent)
 
 local TabPad = Instance.new("UIPadding")
 TabPad.PaddingTop = UDim.new(0, 14)
@@ -282,16 +346,18 @@ TabLayout.Padding = UDim.new(0, 12)
 TabLayout.Parent = TabFrame
 
 local ContentFrame = Instance.new("Frame")
-ContentFrame.Size = UDim2.new(1, -TAB_W, 1, -TITLE_H)
-ContentFrame.Position = UDim2.new(0, TAB_W, 0, TITLE_H)
 ContentFrame.BackgroundColor3 = THEME.ContentBg
 ContentFrame.BorderSizePixel = 0
-ContentFrame.Parent = MainFrame
+ContentFrame.Size = UDim2.new(1, -TAB_W, 1, 0)
+ContentFrame.Position = UDim2.new(0, TAB_W, 0, 0)
+ContentFrame.Parent = Body
+uiCorner(ContentFrame, 16)
+mkStroke(ContentFrame, 1, THEME.Accent)
 
 local ContentScroll = Instance.new("ScrollingFrame")
-ContentScroll.Size = UDim2.new(1, -10, 1, -10)
-ContentScroll.Position = UDim2.new(0, 5, 0, 5)
 ContentScroll.BackgroundTransparency = 1
+ContentScroll.BorderSizePixel = 0
+ContentScroll.Size = UDim2.new(1, 0, 1, 0)
 ContentScroll.ScrollBarThickness = isMobile and 14 or 10
 ContentScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 ContentScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
@@ -311,7 +377,7 @@ ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
 ContentLayout.Padding = UDim.new(0, 16)
 ContentLayout.Parent = ContentScroll
 
--- ========= Behavior: Minimize = Hide / Close = Stop UI =========
+-- ========= MINIMIZE / CLOSE / HOTKEY =========
 local function setHidden(hidden)
 	MainFrame.Visible = not hidden
 	FloatBtn.Visible = hidden
@@ -330,16 +396,19 @@ end))
 local function stopUI()
 	if not running then return end
 	running = false
+
+	-- Safety: turn off AutoFarm (core loop will idle)
+	if type(Settings) == "table" then
+		Settings.AutoFarm = false
+	end
+
 	disconnectAll(tabCons)
 	disconnectAll(globalCons)
 	if gui and gui.Parent then gui:Destroy() end
 end
 
-track(globalCons, CloseBtn.Activated:Connect(function()
-	stopUI()
-end))
+track(globalCons, CloseBtn.Activated:Connect(stopUI))
 
--- Hotkey L = hide/show
 track(globalCons, UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed or not running then return end
 	if input.KeyCode == Enum.KeyCode.L then
@@ -347,11 +416,10 @@ track(globalCons, UserInputService.InputBegan:Connect(function(input, gameProces
 	end
 end))
 
--- ========= DRAG: ONLY via DragBtn =========
+-- ========= DRAG via DRAG button only =========
 do
 	MainFrame.Active = true
 	TitleBar.Active = true
-	DragBtn.Active = true
 
 	local dragging = false
 	local dragStartPos, frameStartPos, dragInput
@@ -370,9 +438,9 @@ do
 		if UserInputService:GetFocusedTextBox() then return end
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
-			dragInput = input
 			dragStartPos = input.Position
 			frameStartPos = MainFrame.Position
+			dragInput = input
 		end
 	end))
 
@@ -391,7 +459,7 @@ do
 	end))
 end
 
--- ========= Content Builders =========
+-- ========= CONTENT BUILDERS =========
 local function clearContent()
 	disconnectAll(tabCons)
 	for _, child in ipairs(ContentScroll:GetChildren()) do
@@ -449,7 +517,7 @@ local function createCheckboxRow(parent, text, initial, onChanged)
 		if not running then return end
 		state = not state
 		repaint()
-		onChanged(state)
+		if onChanged then onChanged(state) end
 	end))
 end
 
@@ -468,42 +536,60 @@ local function createSlider(parent, title, minV, maxV, initial, step, onChanged)
 		return tostring(math.floor(v + 0.5))
 	end
 
-	local label = mkLabel(holder, title .. ": " .. fmt(value), 14, false)
-	label.Size = UDim2.new(1, 0, 0, isMobile and 82 or 70)
-	label.Position = UDim2.new(0, 10, 0, 0)
+	local titleLb = mkLabel(holder, title .. ":", 14, true)
+	titleLb.Size = UDim2.new(1, 0, 0, isMobile and 46 or 40)
+	titleLb.Position = UDim2.new(0, 0, 0, 0)
+
+	local valueLb = mkLabel(holder, fmt(value), 14, true)
+	valueLb.TextXAlignment = Enum.TextXAlignment.Right
+	valueLb.Size = UDim2.new(1, 0, 0, isMobile and 46 or 40)
+	valueLb.Position = UDim2.new(0, 0, 0, 0)
 
 	local bar = Instance.new("Frame")
-	bar.Size = UDim2.new(1, -20, 0, isMobile and 20 or 18)
-	bar.Position = UDim2.new(0, 10, 0, isMobile and 110 or 92)
-	bar.BackgroundColor3 = THEME.TitleBg
+	bar.Size = UDim2.new(1, 0, 0, isMobile and 52 or 44)
+	bar.Position = UDim2.new(0, 0, 0, isMobile and 64 or 56)
+	bar.BackgroundColor3 = THEME.Holder
 	bar.BorderSizePixel = 0
 	bar.Parent = holder
-	bar.Active = true
-	uiCorner(bar, 10)
+	uiCorner(bar, 12)
+	mkStroke(bar, 1, THEME.Accent)
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new((value - minV) / (maxV - minV), 0, 1, 0)
+	fill.BackgroundColor3 = THEME.Accent
+	fill.BorderSizePixel = 0
+	fill.Parent = bar
+	uiCorner(fill, 12)
 
 	local knob = Instance.new("Frame")
-	knob.Size = UDim2.fromOffset(isMobile and 38 or 32, isMobile and 52 or 46)
-	knob.BackgroundColor3 = THEME.Accent
+	knob.Size = UDim2.fromOffset(isMobile and 52 or 44, isMobile and 52 or 44)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.Position = UDim2.new((value - minV) / (maxV - minV), 0, 0.5, 0)
+	knob.BackgroundColor3 = THEME.ButtonActive
 	knob.BorderSizePixel = 0
 	knob.Parent = bar
-	uiCorner(knob, 12)
+	uiCorner(knob, 18)
+	mkStroke(knob, 2, THEME.Accent)
 
-	local function setValueFromRel(rel)
-		rel = clamp(rel, 0, 1)
-		local raw = minV + (maxV - minV) * rel
-		value = clamp(roundStep(raw, step), minV, maxV)
-		local rel2 = (value - minV) / (maxV - minV)
-		knob.Position = UDim2.new(rel2, -(knob.Size.X.Offset/2), 0.5, -(knob.Size.Y.Offset/2))
-		label.Text = title .. ": " .. fmt(value)
-		onChanged(value)
+	local function setValue(v)
+		v = clamp(roundStep(v, step), minV, maxV)
+		value = v
+		valueLb.Text = fmt(value)
+
+		local a = (value - minV) / (maxV - minV)
+		fill.Size = UDim2.new(a, 0, 1, 0)
+		knob.Position = UDim2.new(a, 0, 0.5, 0)
+
+		if onChanged then onChanged(value) end
 	end
-
-	setValueFromRel((value - minV) / (maxV - minV))
 
 	local dragging = false
 	local function updateByX(x)
-		local rel = (x - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1)
-		setValueFromRel(rel)
+		local absPos = bar.AbsolutePosition.X
+		local absSize = bar.AbsoluteSize.X
+		local a = clamp((x - absPos) / absSize, 0, 1)
+		local v = minV + (maxV - minV) * a
+		setValue(v)
 	end
 
 	track(tabCons, bar.InputBegan:Connect(function(input)
@@ -544,32 +630,30 @@ local function createDrawerSection(title, items, mapTable)
 	local header = mkButton(section, "► " .. title, 14)
 	header.Size = UDim2.new(1, 0, 0, isMobile and 120 or 110)
 	header.BackgroundColor3 = THEME.Header
-	uiCorner(header, 10)
-	hover(header, THEME.Header, THEME.ButtonHover)
+	uiCorner(header, 12)
+	mkStroke(header, 1, THEME.Accent)
 
 	local content = Instance.new("Frame")
 	content.Size = UDim2.new(1, 0, 0, 0)
-	content.BackgroundColor3 = THEME.Holder
-	content.BorderSizePixel = 0
 	content.ClipsDescendants = true
+	content.BackgroundTransparency = 1
 	content.Parent = section
-	uiCorner(content, 10)
 
-	local pad = Instance.new("UIPadding")
-	pad.PaddingTop = UDim.new(0, 14)
-	pad.PaddingBottom = UDim.new(0, 14)
-	pad.PaddingLeft = UDim.new(0, 12)
-	pad.PaddingRight = UDim.new(0, 12)
-	pad.Parent = content
+	local innerPad = Instance.new("UIPadding")
+	innerPad.PaddingTop = UDim.new(0, 14)
+	innerPad.PaddingLeft = UDim.new(0, 14)
+	innerPad.PaddingRight = UDim.new(0, 14)
+	innerPad.PaddingBottom = UDim.new(0, 14)
+	innerPad.Parent = content
 
-	local contentLayout = Instance.new("UIListLayout")
-	contentLayout.FillDirection = Enum.FillDirection.Vertical
-	contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	contentLayout.Padding = UDim.new(0, 10)
-	contentLayout.Parent = content
+	local innerLayout = Instance.new("UIListLayout")
+	innerLayout.FillDirection = Enum.FillDirection.Vertical
+	innerLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	innerLayout.Padding = UDim.new(0, 12)
+	innerLayout.Parent = content
 
 	local controls = Instance.new("Frame")
-	controls.Size = UDim2.new(1, 0, 0, isMobile and 58 or 52)
+	controls.Size = UDim2.new(1, 0, 0, isMobile and 64 or 56)
 	controls.BackgroundTransparency = 1
 	controls.Parent = content
 
@@ -611,49 +695,62 @@ local function createDrawerSection(title, items, mapTable)
 
 	local listScroll = Instance.new("ScrollingFrame")
 	listScroll.Size = UDim2.new(1, 0, 0, listHeight)
-	listScroll.BackgroundTransparency = 1
+	listScroll.BackgroundColor3 = THEME.Holder
 	listScroll.BorderSizePixel = 0
-	listScroll.ScrollBarThickness = isMobile and 14 or 10
+	listScroll.ScrollBarThickness = isMobile and 12 or 9
+	listScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 	listScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	listScroll.ScrollingDirection = Enum.ScrollingDirection.Y
 	listScroll.Parent = content
+	uiCorner(listScroll, 12)
+	mkStroke(listScroll, 1, THEME.Accent)
+
+	local listPad = Instance.new("UIPadding")
+	listPad.PaddingTop = UDim.new(0, 12)
+	listPad.PaddingBottom = UDim.new(0, 12)
+	listPad.PaddingLeft = UDim.new(0, 12)
+	listPad.PaddingRight = UDim.new(0, 12)
+	listPad.Parent = listScroll
 
 	local listLayout = Instance.new("UIListLayout")
-	listLayout.Padding = UDim.new(0, 10)
+	listLayout.FillDirection = Enum.FillDirection.Vertical
 	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Padding = UDim.new(0, 12)
 	listLayout.Parent = listScroll
 
 	local rows = {}
-	for _, nameAny in ipairs(items) do
-		local name = tostring(nameAny)
-		if mapTable[name] == nil then mapTable[name] = false end
-
+	for _, name in ipairs(items) do
 		local row = Instance.new("Frame")
-		row.Size = UDim2.new(1, 0, 0, isMobile and 84 or 72)
+		row.Size = UDim2.new(1, 0, 0, isMobile and 100 or 90)
 		row.BackgroundTransparency = 1
 		row.Parent = listScroll
 
 		local box = Instance.new("TextButton")
-		box.Size = UDim2.fromOffset(isMobile and 62 or 50, isMobile and 62 or 50)
-		box.Position = UDim2.new(0, 8, 0.5, -(isMobile and 31 or 25))
+		box.Size = UDim2.fromOffset(isMobile and 52 or 46, isMobile and 52 or 46)
+		box.Position = UDim2.new(0, 0, 0.5, -(isMobile and 26 or 23))
 		box.Text = ""
 		box.AutoButtonColor = false
+		box.BackgroundColor3 = THEME.BoxOff
 		box.Parent = row
 		uiCorner(box, 10)
 
-		local label = mkLabel(row, name, 16, false)
-		label.Size = UDim2.new(1, -110, 1, 0)
-		label.Position = UDim2.new(0, isMobile and 104 or 80, 0, 0)
+		local lb = mkLabel(row, name, 14, true)
+		lb.Size = UDim2.new(1, -70, 1, 0)
+		lb.Position = UDim2.new(0, isMobile and 70 or 62, 0, 0)
 
-		local state = mapTable[name] == true
+		local nameLower = name:lower()
+		local state = (mapTable[name] == true)
+
 		local function repaint()
 			box.BackgroundColor3 = state and THEME.BoxOn or THEME.BoxOff
 		end
+
 		local function setState(v)
 			state = (v == true)
 			mapTable[name] = state
 			repaint()
 		end
+
 		repaint()
 
 		track(tabCons, box.Activated:Connect(function()
@@ -661,7 +758,7 @@ local function createDrawerSection(title, items, mapTable)
 			setState(not state)
 		end))
 
-		rows[#rows+1] = { nameLower = name:lower(), row = row, setState = setState }
+		rows[#rows+1] = { nameLower = nameLower, row = row, setState = setState }
 	end
 
 	local function applyFilter()
@@ -675,7 +772,18 @@ local function createDrawerSection(title, items, mapTable)
 		end
 	end
 
-	track(tabCons, search:GetPropertyChangedSignal("Text"):Connect(applyFilter))
+	-- debounce filter
+	local token = 0
+	local function applyFilterDebounced()
+		token += 1
+		local my = token
+		task.delay(0.08, function()
+			if not running or my ~= token then return end
+			applyFilter()
+		end)
+	end
+	track(tabCons, search:GetPropertyChangedSignal("Text"):Connect(applyFilterDebounced))
+
 	track(tabCons, btnSelectAll.Activated:Connect(function()
 		for _, r in ipairs(rows) do r.setState(true) end
 		applyFilter()
@@ -685,14 +793,25 @@ local function createDrawerSection(title, items, mapTable)
 		applyFilter()
 	end))
 
+	-- expand/collapse (cancel tween if spam-click)
 	local expanded = false
 	local expandedHeight = 14 + 14 + (isMobile and 58 or 52) + (isMobile and 58 or 52) + listHeight + 80
+	local activeTween = nil
+
 	local function setExpanded(on)
 		expanded = on
 		header.Text = (expanded and "▼ " or "► ") .. title
-		TweenService:Create(content, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+
+		if activeTween then
+			activeTween:Cancel()
+			activeTween = nil
+		end
+
+		activeTween = TweenService:Create(content, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 			Size = UDim2.new(1, 0, 0, expanded and expandedHeight or 0)
-		}):Play()
+		})
+		activeTween:Play()
+
 		if expanded then applyFilter() end
 	end
 
@@ -701,36 +820,61 @@ local function createDrawerSection(title, items, mapTable)
 	end))
 end
 
--- ========= Tabs =========
+-- ========= TABS =========
 local miningBtn = createTabButton("Mining")
 local settingBtn = createTabButton("Setting")
 
 local function buildMining()
 	clearContent()
-	createCheckboxRow(ContentScroll, "Auto Mining", UIState.AutoMining, function(v)
-		UIState.AutoMining = v
+
+	createCheckboxRow(ContentScroll, "Auto Farm", Settings.AutoFarm == true, function(v)
+		Settings.AutoFarm = (v == true)
+		if Settings.AutoFarm then
+			-- start core only if available; harmless if absent
+			ensureCoreStarted()
+		end
 	end)
-	createDrawerSection(("Zones (%d)"):format(#UIState.Data.Zones), UIState.Data.Zones, UIState.Zones)
-	createDrawerSection(("Rocks (%d)"):format(#UIState.Data.Rocks), UIState.Data.Rocks, UIState.Rocks)
-	createDrawerSection(("Ores (%d)"):format(#UIState.Data.Ores), UIState.Data.Ores, UIState.Ores)
+
+	createDrawerSection("Zones", DATA.Zones, Settings.Zones)
+	createDrawerSection("Rocks", DATA.Rocks, Settings.Rocks)
+	createDrawerSection("Ores",  DATA.Ores,  Settings.Ores)
 end
 
 local function buildSetting()
 	clearContent()
-	createSlider(ContentScroll, "TweenSpeed", 20, 80, UIState.TweenSpeed, 1, function(v)
-		UIState.TweenSpeed = clamp(tonumber(v) or 55, 20, 80)
+
+	createSlider(ContentScroll, "TweenSpeed", 20, 80, Settings.TweenSpeed or 55, 1, function(v)
+		Settings.TweenSpeed = v
 	end)
-	createSlider(ContentScroll, "YOffset", -7, 7, UIState.YOffset, 0.5, function(v)
-		v = clamp(tonumber(v) or 3, -7, 7)
-		UIState.YOffset = roundStep(v, 0.5)
+
+	createSlider(ContentScroll, "YOffset", -7, 7, Settings.YOffset or 3, 0.5, function(v)
+		Settings.YOffset = v
 	end)
+
+	-- Info panel (optional, small)
+	local info = Instance.new("Frame")
+	info.Size = UDim2.new(1, 0, 0, isMobile and 120 or 100)
+	info.BackgroundColor3 = THEME.Holder
+	info.BorderSizePixel = 0
+	info.Parent = ContentScroll
+	uiCorner(info, 12)
+	mkStroke(info, 1, THEME.Accent)
+
+	local msg = usingModules
+		and "Mode: Core+Settings (ReplicatedStorage)\nHotkey: L | Minimize: − | Close: ×"
+		or "Mode: UI-only fallback (modules not found)\nHotkey: L | Minimize: − | Close: ×"
+
+	local lb = mkLabel(info, msg, 13, true)
+	lb.Size = UDim2.new(1, -24, 1, -24)
+	lb.Position = UDim2.new(0, 12, 0, 12)
 end
 
-track(tabCons, miningBtn.Activated:Connect(function()
+-- Tab events must be GLOBAL (so they don't die after clearContent)
+track(globalCons, miningBtn.Activated:Connect(function()
 	setTabSelected(miningBtn)
 	buildMining()
 end))
-track(tabCons, settingBtn.Activated:Connect(function()
+track(globalCons, settingBtn.Activated:Connect(function()
 	setTabSelected(settingBtn)
 	buildSetting()
 end))
@@ -738,4 +882,4 @@ end))
 setTabSelected(miningBtn)
 buildMining()
 
-print("[lprxsw] Old style GUI ready. Drag via DRAG button. L = hide/show. X = stop UI.")
+print(("[ForgeUI] Ready. Modules=%s | Press L to toggle."):format(tostring(usingModules)))
