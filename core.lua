@@ -140,8 +140,7 @@ function M.Start(Settings, DATA)
 	local prevCamType = nil
 
 	local function StopCameraStabilize()
-		-- NOTE: ini mengikuti versi kamu (BindToRenderStep tidak return connection).
-		-- Kalau kamu mau stop benar-benar bersih, ganti ke UnbindFromRenderStep.
+		-- mengikuti versi kamu; jika ingin benar-benar stop: RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
 		if camConn then
 			pcall(function()
 				camConn:Disconnect()
@@ -263,13 +262,12 @@ function M.Start(Settings, DATA)
 		return (maxHP > 0) and ((curHP / maxHP) * 100) or 100
 	end
 
-	-- ========= LAST HIT OWNERSHIP (FIXED: allow owned-by-me) =========
+	-- ========= LAST HIT OWNERSHIP =========
 	local function GetLastHitOwner(model)
 		local v = model:GetAttribute("LastHitPlayer")
 		if v == nil then v = model:GetAttribute("LastHitUserId") end
 		if v == nil then v = model:GetAttribute("LastHitBy") end
 		if v == nil then v = model:GetAttribute("LastHitter") end
-		-- optional common fallbacks (aman, kalau tidak ada ya nil)
 		if v == nil then v = model:GetAttribute("OwnerUserId") end
 		if v == nil then v = model:GetAttribute("Owner") end
 		return v
@@ -277,28 +275,19 @@ function M.Start(Settings, DATA)
 
 	local function IsOwnerMe(owner)
 		if owner == nil then return false end
-
-		-- Player instance
 		if typeof(owner) == "Instance" and owner:IsA("Player") then
 			return owner == Player
 		end
-
-		-- UserId number
 		if type(owner) == "number" then
 			return owner == Player.UserId
 		end
-
-		-- String: userId / Name / DisplayName
 		if type(owner) == "string" then
 			local n = tonumber(owner)
-			if n then
-				return n == Player.UserId
-			end
+			if n then return n == Player.UserId end
 			local s = owner:lower()
 			if Player.Name and s == Player.Name:lower() then return true end
 			if Player.DisplayName and s == Player.DisplayName:lower() then return true end
 		end
-
 		return false
 	end
 
@@ -308,28 +297,14 @@ function M.Start(Settings, DATA)
 		end
 
 		local owner = GetLastHitOwner(model)
-		if owner == nil then
-			return true -- unowned
-		end
-
-		-- Some games use 0 / "" for "none"
-		if type(owner) == "number" and owner == 0 then
-			return true
-		end
-		if type(owner) == "string" and owner == "" then
-			return true
-		end
-
-		-- allow if owned by me
-		if IsOwnerMe(owner) then
-			return true
-		end
-
-		-- otherwise block
+		if owner == nil then return true end
+		if type(owner) == "number" and owner == 0 then return true end
+		if type(owner) == "string" and owner == "" then return true end
+		if IsOwnerMe(owner) then return true end
 		return false
 	end
 
-	-- ========= ORE TYPE CACHE =========
+	-- ========= ORE TYPE CACHE + FILTER =========
 	local function GetOreType(rockModel)
 		local ore = rockModel:FindFirstChild("Ore", true)
 		if ore and ore:IsA("StringValue") then
@@ -346,23 +321,17 @@ function M.Start(Settings, DATA)
 	end
 
 	local function RockMatchesOreSelection(rockModel, oreType)
-		-- If user didn't pick ores and allow-all is enabled => allow everything
 		local anySelected = AnyOreSelected()
 		if (not anySelected) and (Settings.AllowAllOresIfNoneSelected == true) then
 			return true
 		end
-
-		-- If user selected ores but strict flag off => allow everything
 		if anySelected and (not Settings.RequireOreMatchWhenSelected) then
 			return true
 		end
-
-		-- If no selection and allow-all disabled => block none? (keep compatibility)
 		if not anySelected then
 			return Settings.AllowAllOresIfNoneSelected == true
 		end
 
-		-- If ore is unknown (not revealed yet), allow when HP% > threshold if configured
 		if oreType == nil then
 			if Settings.AllowUnknownOreAboveReveal then
 				local pct = GetHealthPct(rockModel)
@@ -372,7 +341,6 @@ function M.Start(Settings, DATA)
 			return false
 		end
 
-		-- Known ore => must be selected
 		return Settings.Ores[oreType] == true
 	end
 
@@ -400,7 +368,6 @@ function M.Start(Settings, DATA)
 		RockIndex.byModel[model] = entry
 		table.insert(RockIndex.entries, entry)
 
-		-- Keep oreType cached if Ore node changes
 		model.ChildAdded:Connect(function()
 			entry.oreType = GetOreType(model)
 		end)
@@ -427,7 +394,6 @@ function M.Start(Settings, DATA)
 			return nil
 		end
 
-		-- Initial scan
 		for _, zone in ipairs(rocksFolder:GetChildren()) do
 			if zone:IsA("Folder") or zone:IsA("Model") then
 				for _, desc in ipairs(zone:GetDescendants()) do
@@ -438,7 +404,6 @@ function M.Start(Settings, DATA)
 			end
 		end
 
-		-- Zone added
 		rocksFolder.ChildAdded:Connect(function(child)
 			task.wait(0.1)
 			if not child then return end
@@ -451,7 +416,6 @@ function M.Start(Settings, DATA)
 			end
 		end)
 
-		-- Rock added/removed anywhere under Rocks
 		rocksFolder.DescendantAdded:Connect(function(inst)
 			if IsRockModel(inst) then
 				local zone = inst:FindFirstAncestorWhichIsA("Folder") or inst:FindFirstAncestorWhichIsA("Model")
@@ -472,7 +436,6 @@ function M.Start(Settings, DATA)
 
 	local rocksFolder = InitRockIndex()
 	if not rocksFolder then
-		-- try again later (non-blocking)
 		task.spawn(function()
 			while not rocksFolder do
 				task.wait(1)
@@ -491,7 +454,6 @@ function M.Start(Settings, DATA)
 	local prevPlatformStand, prevAutoRotate, prevAnchored
 	local prevWalkSpeed, prevJumpPower
 
-	-- Constraint objects
 	local lockTargetPart = nil
 	local rootAtt, targetAtt
 	local alignPos, alignOri
@@ -714,9 +676,11 @@ function M.Start(Settings, DATA)
 		return closestPart
 	end
 
-	-- ========= MOVE =========
+	-- ========= MOVE (TweenSpeed = studs/sec) =========
 	local activeTween = nil
 	local currentTargetPart = nil
+	local lastTweenSpeedUsed = nil
+	local lastGoalPos = nil
 
 	local function CancelTween()
 		if activeTween then
@@ -741,53 +705,85 @@ function M.Start(Settings, DATA)
 		return targetPos, lockCF
 	end
 
+	-- IMPORTANT: This EnsureAtPart always uses tween while dist > ArriveDistance
+	-- so TweenSpeed feels 1:1 (e.g. 40 => ~40 studs/sec).
 	local function EnsureAtPart(targetPart)
-		if not (targetPart and targetPart.Parent) then return false end
+		if not (targetPart and targetPart.Parent) then
+			CancelTween()
+			currentTargetPart = nil
+			lastTweenSpeedUsed = nil
+			lastGoalPos = nil
+			return false
+		end
+
 		local _, r = GetCharAndRoot()
-		if not (r and r.Parent) then return false end
+		if not (r and r.Parent) then
+			CancelTween()
+			currentTargetPart = nil
+			lastTweenSpeedUsed = nil
+			lastGoalPos = nil
+			return false
+		end
 
 		local targetPos, lockCF = MakeMiningLockCF(targetPart)
-		local desiredCF = CFrame.new(targetPos)
 
 		local dist = (r.Position - targetPos).Magnitude
 		local arriveDist = tonumber(Settings.ArriveDistance) or 2.25
-		local retweenDist = tonumber(Settings.RetweenDistance) or 6
 
+		-- close enough => lock (no tween needed)
 		if dist <= arriveDist then
 			CancelTween()
+			currentTargetPart = targetPart
+			lastGoalPos = targetPos
+			lastTweenSpeedUsed = tonumber(Settings.TweenSpeed) or lastTweenSpeedUsed
+
 			StartLock(r, lockCF)
 			StartCameraStabilize()
 			if Settings.KeepNoclipWhileLocked then enableNoclip() else disableNoclip() end
 			return true
 		end
 
-		if dist < retweenDist and currentTargetPart == targetPart then
-			StartLock(r, lockCF)
-			StartCameraStabilize()
-			if Settings.KeepNoclipWhileLocked then enableNoclip() end
-			return true
+		-- Always tween with speed = Settings.TweenSpeed (studs/sec)
+		local speed = math.max(1, tonumber(Settings.TweenSpeed) or 55)
+		local duration = math.max(0.06, dist / speed)
+
+		-- Avoid restarting tween if nothing important changed
+		local sameTarget = (currentTargetPart == targetPart)
+		local sameSpeed = (lastTweenSpeedUsed == speed)
+		local sameGoal = (lastGoalPos ~= nil) and ((lastGoalPos - targetPos).Magnitude < 0.05)
+
+		if activeTween and sameTarget and sameSpeed and sameGoal then
+			enableNoclip()
+			return false
 		end
+
+		-- restart tween if target/speed/goal changed
+		currentTargetPart = targetPart
+		lastTweenSpeedUsed = speed
+		lastGoalPos = targetPos
 
 		enableNoclip()
 		StopCameraStabilize()
 		StopLock()
 		CancelTween()
 
-		-- TweenSpeed dipakai sebagai "studs per second"
-		local speed = math.max(1, tonumber(Settings.TweenSpeed) or 55)
-		local duration = math.max(0.06, dist / speed)
-
 		activeTween = TweenService:Create(
 			r,
-			TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-			{ CFrame = desiredCF }
+			TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+			{ CFrame = CFrame.new(targetPos) }
 		)
-
 		activeTween:Play()
+
+		-- Wait finish (keeping your original "blocking" style)
 		pcall(function() activeTween.Completed:Wait() end)
 		activeTween = nil
 
-		StartLock(r, lockCF)
+		-- Re-check validity (safe)
+		if not (targetPart and targetPart.Parent) then return false end
+		local _, rr = GetCharAndRoot()
+		if not (rr and rr.Parent) then return false end
+
+		StartLock(rr, lockCF)
 		StartCameraStabilize()
 		if Settings.KeepNoclipWhileLocked then enableNoclip() else disableNoclip() end
 		return true
@@ -807,9 +803,12 @@ function M.Start(Settings, DATA)
 			if not Settings.AutoFarm then
 				currentTargetPart = nil
 				lockedTarget = nil
+				CancelTween()
 				StopCameraStabilize()
 				StopLock()
 				disableNoclip()
+				lastTweenSpeedUsed = nil
+				lastGoalPos = nil
 				task.wait(0.15)
 				continue
 			end
@@ -818,9 +817,12 @@ function M.Start(Settings, DATA)
 			if not r then
 				currentTargetPart = nil
 				lockedTarget = nil
+				CancelTween()
 				StopCameraStabilize()
 				StopLock()
 				disableNoclip()
+				lastTweenSpeedUsed = nil
+				lastGoalPos = nil
 				task.wait(0.25)
 				continue
 			end
@@ -838,12 +840,10 @@ function M.Start(Settings, DATA)
 						targetInvalid = true
 					end
 
-					-- ownership re-check (FIXED)
 					if (not targetInvalid) and (not RockIsAllowed(rockModel)) then
 						targetInvalid = true
 					end
 
-					-- ore strict re-check (ore reveal aware)
 					if (not targetInvalid) and Settings.RequireOreMatchWhenSelected and AnyOreSelected() then
 						if not RockMatchesOreSelection(rockModel, GetOreType(rockModel)) then
 							targetInvalid = true
@@ -855,6 +855,9 @@ function M.Start(Settings, DATA)
 			if targetInvalid then
 				lockedTarget = nil
 				currentTargetPart = nil
+				CancelTween()
+				lastTweenSpeedUsed = nil
+				lastGoalPos = nil
 			end
 
 			if lockedTarget and now < lockedUntil then
@@ -879,6 +882,7 @@ function M.Start(Settings, DATA)
 					end
 				end
 			else
+				CancelTween()
 				StopCameraStabilize()
 				StopLock()
 				disableNoclip()
@@ -892,7 +896,7 @@ function M.Start(Settings, DATA)
 		disableNoclip()
 	end)
 
-	print("[✓] Forge Core OPT Loaded! (split core/settings)")
+	print("[✓] Forge Core OPT Loaded! (TweenSpeed = studs/sec, always tween when moving)")
 end
 
 return M
