@@ -1,6 +1,7 @@
 -- ReplicatedStorage/ForgeCore (ModuleScript)
 -- FULL: TweenSpeed = studs/sec (always tween when moving) + MULTI-ORE FIX
 -- + CAMERA FIX: player can still rotate/zoom camera while mining (uses Humanoid.CameraOffset, NOT Scriptable cam)
+-- + PATCH (Solusi 2): CameraOffset di-lerp per frame untuk mengurangi kamera maju-mundur
 --
 -- Notes:
 -- - CameraStabilize now means "apply CameraOffset while mining/locked" (camera remains Custom).
@@ -145,29 +146,85 @@ function M.Start(Settings, DATA)
 	-- ========= CAMERA (FIX: allow player control) =========
 	-- Instead of Scriptable camera + forcing CFrame each frame (which locks mouse look),
 	-- we apply Humanoid.CameraOffset while mining/locked, keeping CameraType.Custom.
+	-- PATCH (Solusi 2): CameraOffset di-lerp per frame (RenderStep) supaya tidak memicu kamera maju-mundur.
 	local prevCamType = nil
 	local prevHumCamOffset = nil
 	local cameraApplied = false
+	local cameraRestoring = false
+	local camOffsetGoal = nil
 
-	local function StopCameraStabilize()
-		-- In case older code bound RenderStep
+	local function bindCameraOffsetLerp()
+		-- Pastikan tidak double-bind
 		pcall(function()
 			RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
 		end)
 
+		RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function()
+			local hum = GetHumanoid()
+			if not hum then
+				-- Character/humanoid hilang, cleanup supaya tidak nyangkut
+				pcall(function()
+					RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
+				end)
+				camOffsetGoal = nil
+				cameraApplied = false
+				cameraRestoring = false
+				prevHumCamOffset = nil
+				prevCamType = nil
+				return
+			end
+
+			if not camOffsetGoal then return end
+
+			local alpha = Settings.CameraOffsetLerpAlpha
+			if type(alpha) ~= "number" then alpha = 0.15 end
+			alpha = math.clamp(alpha, 0, 1)
+
+			hum.CameraOffset = hum.CameraOffset:Lerp(camOffsetGoal, alpha)
+
+			-- Jika sedang restore: ketika sudah dekat goal, snap + unbind
+			if cameraRestoring then
+				local diff = (hum.CameraOffset - camOffsetGoal).Magnitude
+				local eps = Settings.CameraOffsetRestoreEps
+				if type(eps) ~= "number" then eps = 0.05 end
+
+				if diff <= eps then
+					hum.CameraOffset = camOffsetGoal
+					pcall(function()
+						RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
+					end)
+
+					camOffsetGoal = nil
+					cameraRestoring = false
+					cameraApplied = false
+					prevHumCamOffset = nil
+					prevCamType = nil
+				end
+			end
+		end)
+	end
+
+	local function StopCameraStabilize()
+		-- Jika tidak pernah apply, cukup unbind (jaga-jaga kompatibilitas)
+		if not cameraApplied then
+			pcall(function()
+				RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
+			end)
+			camOffsetGoal = nil
+			cameraRestoring = false
+			return
+		end
+
+		-- Restore CameraType langsung
 		local cam = Workspace.CurrentCamera
 		if cam and prevCamType then
 			cam.CameraType = prevCamType
 		end
-		prevCamType = nil
 
-		local hum = GetHumanoid()
-		if hum and prevHumCamOffset then
-			hum.CameraOffset = prevHumCamOffset
-		end
-		prevHumCamOffset = nil
-
-		cameraApplied = false
+		-- Restore offset secara halus menuju offset sebelumnya
+		camOffsetGoal = prevHumCamOffset or Vector3.zero
+		cameraRestoring = true
+		bindCameraOffsetLerp()
 	end
 
 	local function StartCameraStabilize()
@@ -186,11 +243,12 @@ function M.Start(Settings, DATA)
 			cameraApplied = true
 		end
 
+		cameraRestoring = false
 		cam.CameraType = Enum.CameraType.Custom
 
-		-- Apply offset while mining/locked
-		local offset = Settings.CameraOffset or Vector3.new(0, 10, 18)
-		hum.CameraOffset = offset
+		-- Goal offset while mining/locked (dikejar dengan lerp)
+		camOffsetGoal = Settings.CameraOffset or Vector3.new(0, 10, 18)
+		bindCameraOffsetLerp()
 	end
 
 	-- ========= TOOL REMOTE =========
