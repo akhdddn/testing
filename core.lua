@@ -302,113 +302,120 @@ function M.Start(Settings, DATA)
 		return false
 	end
 
-	-- Allowed = unowned OR mine (when RespectLastHitPlayer enabled)
 	local function RockIsAllowed(model)
-		if Settings.RespectLastHitPlayer ~= true then
+		if not Settings.RespectLastHitPlayer then
 			return true
 		end
 
 		local owner = GetLastHitOwner(model)
+		if owner == nil then
+			return true -- unowned
+		end
 
-		-- unowned cases
-		if owner == nil then return true end
-		if owner == "" then return true end
-		if owner == 0 then return true end
+		-- Some games use 0 / "" for "none"
+		if type(owner) == "number" and owner == 0 then
+			return true
+		end
+		if type(owner) == "string" and owner == "" then
+			return true
+		end
 
-		-- owned by me is OK
+		-- allow if owned by me
 		if IsOwnerMe(owner) then
 			return true
 		end
 
-		-- someone else's
+		-- otherwise block
 		return false
 	end
 
-	local function AnyOreSelected()
-		return select(1, boolCount(Settings.Ores))
-	end
-
+	-- ========= ORE TYPE CACHE =========
 	local function GetOreType(rockModel)
-		for _, child in ipairs(rockModel:GetChildren()) do
-			if child.Name == "Ore" then
-				local oreType = child:GetAttribute("Ore")
-				if oreType ~= nil then
-					return oreType
-				end
-			end
+		local ore = rockModel:FindFirstChild("Ore", true)
+		if ore and ore:IsA("StringValue") then
+			return ore.Value
 		end
+		local v = rockModel:GetAttribute("Ore")
+		if type(v) == "string" then return v end
 		return nil
 	end
 
-	local function RockMatchesOreSelection(rockModel, cachedOreType)
-		local oresAny = AnyOreSelected()
-		if (not oresAny) and (Settings.AllowAllOresIfNoneSelected == true) then
+	local function AnyOreSelected()
+		local any = select(1, boolCount(Settings.Ores))
+		return any
+	end
+
+	local function RockMatchesOreSelection(rockModel, oreType)
+		-- If user didn't pick ores and allow-all is enabled => allow everything
+		local anySelected = AnyOreSelected()
+		if (not anySelected) and (Settings.AllowAllOresIfNoneSelected == true) then
 			return true
 		end
 
-		local oreType = cachedOreType
-		if oreType == nil then oreType = GetOreType(rockModel) end
+		-- If user selected ores but strict flag off => allow everything
+		if anySelected and (not Settings.RequireOreMatchWhenSelected) then
+			return true
+		end
 
+		-- If no selection and allow-all disabled => block none? (keep compatibility)
+		if not anySelected then
+			return Settings.AllowAllOresIfNoneSelected == true
+		end
+
+		-- If ore is unknown (not revealed yet), allow when HP% > threshold if configured
 		if oreType == nil then
-			if oresAny and Settings.AllowUnknownOreAboveReveal then
-				local hpPct = GetHealthPct(rockModel)
-				local thr = tonumber(Settings.OreRevealThreshold) or 45
-				if hpPct ~= nil and hpPct > thr then
-					return true
-				end
+			if Settings.AllowUnknownOreAboveReveal then
+				local pct = GetHealthPct(rockModel)
+				local thr = tonumber(Settings.OreRevealThreshold) or 50
+				return pct > thr
 			end
 			return false
 		end
 
+		-- Known ore => must be selected
 		return Settings.Ores[oreType] == true
 	end
 
-	local function IsRockAliveEnough(rockModel)
-		local hp = rockModel:GetAttribute("Health")
-		if type(hp) == "number" then
-			return hp > 0
-		end
-		return true
+	local function IsRockAliveEnough(model)
+		local hp = model:GetAttribute("Health")
+		if hp == nil then return true end
+		return hp > 0
 	end
 
-	local function UpsertRock(rockModel, zoneName)
-		if not rockModel then return end
-		if RockIndex.byModel[rockModel] then
-			local e = RockIndex.byModel[rockModel]
+	local function UpsertRock(model, zoneName)
+		if RockIndex.byModel[model] then
+			local e = RockIndex.byModel[model]
 			e.zoneName = zoneName or e.zoneName
+			e.part = e.part and e.part.Parent and e.part or PickTargetPartFromRockModel(model)
+			e.oreType = GetOreType(model)
 			return
 		end
 
-		local part = PickTargetPartFromRockModel(rockModel)
 		local entry = {
-			model = rockModel,
-			zoneName = zoneName,
-			part = part,
-			oreType = GetOreType(rockModel),
+			model = model,
+			zoneName = zoneName or "UnknownZone",
+			part = PickTargetPartFromRockModel(model),
+			oreType = GetOreType(model),
 		}
+		RockIndex.byModel[model] = entry
 		table.insert(RockIndex.entries, entry)
-		RockIndex.byModel[rockModel] = entry
 
-		rockModel.ChildAdded:Connect(function(ch)
-			if ch.Name == "Ore" then
-				entry.oreType = GetOreType(rockModel)
-			end
+		-- Keep oreType cached if Ore node changes
+		model.ChildAdded:Connect(function()
+			entry.oreType = GetOreType(model)
 		end)
-		rockModel.ChildRemoved:Connect(function(ch)
-			if ch.Name == "Ore" then
-				entry.oreType = GetOreType(rockModel)
-			end
+		model.ChildRemoved:Connect(function()
+			entry.oreType = GetOreType(model)
 		end)
 	end
 
-	local function RemoveRock(rockModel)
-		local entry = RockIndex.byModel[rockModel]
-		if not entry then return end
-		RockIndex.byModel[rockModel] = nil
+	local function RemoveRock(model)
+		local e = RockIndex.byModel[model]
+		if not e then return end
+		RockIndex.byModel[model] = nil
 		for i = #RockIndex.entries, 1, -1 do
-			if RockIndex.entries[i].model == rockModel then
+			if RockIndex.entries[i].model == model then
 				table.remove(RockIndex.entries, i)
-				break
 			end
 		end
 	end
@@ -416,74 +423,84 @@ function M.Start(Settings, DATA)
 	local function InitRockIndex()
 		local rocksFolder = Workspace:FindFirstChild("Rocks")
 		if not rocksFolder then
-			warn("[!] Workspace.Rocks not found.")
-			return
+			D("INDEX", "Workspace.Rocks not found (will retry later)")
+			return nil
 		end
 
-		local function scanZone(zoneFolder)
-			for _, d in ipairs(zoneFolder:GetDescendants()) do
-				if d:IsA("Model") and IsRockModel(d) then
-					UpsertRock(d, zoneFolder.Name)
+		-- Initial scan
+		for _, zone in ipairs(rocksFolder:GetChildren()) do
+			if zone:IsA("Folder") or zone:IsA("Model") then
+				for _, desc in ipairs(zone:GetDescendants()) do
+					if IsRockModel(desc) then
+						UpsertRock(desc, zone.Name)
+					end
 				end
 			end
 		end
 
-		for _, zone in ipairs(rocksFolder:GetChildren()) do
-			if zone:IsA("Folder") then
-				scanZone(zone)
-			end
-		end
-
-		rocksFolder.ChildAdded:Connect(function(ch)
-			if ch:IsA("Folder") then
-				scanZone(ch)
+		-- Zone added
+		rocksFolder.ChildAdded:Connect(function(child)
+			task.wait(0.1)
+			if not child then return end
+			if child:IsA("Folder") or child:IsA("Model") then
+				for _, desc in ipairs(child:GetDescendants()) do
+					if IsRockModel(desc) then
+						UpsertRock(desc, child.Name)
+					end
+				end
 			end
 		end)
 
+		-- Rock added/removed anywhere under Rocks
 		rocksFolder.DescendantAdded:Connect(function(inst)
-			if inst:IsA("Model") and IsRockModel(inst) then
-				local zoneFolder = inst:FindFirstAncestorOfClass("Folder")
-				if zoneFolder and zoneFolder.Parent == rocksFolder then
-					UpsertRock(inst, zoneFolder.Name)
-				end
+			if IsRockModel(inst) then
+				local zone = inst:FindFirstAncestorWhichIsA("Folder") or inst:FindFirstAncestorWhichIsA("Model")
+				local zn = zone and zone.Name or "UnknownZone"
+				UpsertRock(inst, zn)
 			end
 		end)
 
 		rocksFolder.DescendantRemoving:Connect(function(inst)
-			if inst:IsA("Model") then
+			if IsRockModel(inst) then
 				RemoveRock(inst)
 			end
 		end)
 
-		D("INDEX", "RockIndex initialized", #RockIndex.entries)
+		D("INDEX", "Rock index initialized", #RockIndex.entries)
+		return rocksFolder
 	end
 
-	InitRockIndex()
+	local rocksFolder = InitRockIndex()
+	if not rocksFolder then
+		-- try again later (non-blocking)
+		task.spawn(function()
+			while not rocksFolder do
+				task.wait(1)
+				rocksFolder = InitRockIndex()
+			end
+		end)
+	end
 
-	-- ========= LOCK SYSTEM (Hard/Constraint) =========
+	-- ========= LOCK (HARD / CONSTRAINT) =========
 	local lockConn = nil
 	local lockRoot = nil
-	local lockCFrame = nil
 	local lockHum = nil
-
-	local prevPlatformStand = nil
-	local prevAutoRotate = nil
-	local prevAnchored = nil
-	local prevWalkSpeed = nil
-	local prevJumpPower = nil
-
-	local lockTargetPart = nil
-	local rootAtt = nil
-	local targetAtt = nil
-	local alignPos = nil
-	local alignOri = nil
-
+	local lockCFrame = nil
 	local currentLockMode = nil
 
-	local function DestroyConstraintLock()
+	local prevPlatformStand, prevAutoRotate, prevAnchored
+	local prevWalkSpeed, prevJumpPower
+
+	-- Constraint objects
+	local lockTargetPart = nil
+	local rootAtt, targetAtt
+	local alignPos, alignOri
+
+	local function CleanupConstraintStuff()
 		if alignPos then alignPos:Destroy() end
 		if alignOri then alignOri:Destroy() end
 		if rootAtt then rootAtt:Destroy() end
+		if targetAtt then targetAtt:Destroy() end
 		if lockTargetPart then lockTargetPart:Destroy() end
 		alignPos, alignOri, rootAtt, targetAtt, lockTargetPart = nil, nil, nil, nil, nil
 	end
@@ -491,9 +508,8 @@ function M.Start(Settings, DATA)
 	local function StopLock()
 		if lockConn then lockConn:Disconnect() end
 		lockConn = nil
-		lockCFrame = nil
 
-		DestroyConstraintLock()
+		CleanupConstraintStuff()
 
 		if lockRoot and lockRoot.Parent and prevAnchored ~= nil then
 			lockRoot.Anchored = prevAnchored
@@ -757,6 +773,7 @@ function M.Start(Settings, DATA)
 		StopLock()
 		CancelTween()
 
+		-- TweenSpeed dipakai sebagai "studs per second"
 		local speed = math.max(1, tonumber(Settings.TweenSpeed) or 55)
 		local duration = math.max(0.06, dist / speed)
 
