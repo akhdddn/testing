@@ -1,11 +1,39 @@
--- Forge GUI Mini (LocalScript or loadstring result)
--- Needs: _G.Settings and _G.DATA (from ForgeSettings.ApplyToGlobals)
+-- Forge GUI Mini (Full)
+-- Tabs:
+--  1) Mining: AutoMining toggle + drawers (Zone/Rock/Ore) with SelectAll/Clear/Search
+--  2) Setting: TweenSpeed slider + YOffset slider
+-- Drag:
+--  - Drag window by header area or title text. Does NOT interfere with buttons/textboxes.
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 
 local M = {}
 
+-- ========= STYLE (ubah di sini kalau mau mirip GUI lamamu) =========
+local STYLE = {
+	MainBg = Color3.fromRGB(20, 20, 20),
+	CardBg = Color3.fromRGB(35, 35, 35),
+	CardBg2 = Color3.fromRGB(28, 28, 28),
+	ButtonBg = Color3.fromRGB(45, 45, 45),
+	ButtonBg2 = Color3.fromRGB(55, 55, 55),
+	Stroke = Color3.fromRGB(70, 70, 70),
+	Text = Color3.fromRGB(235, 235, 235),
+	Text2 = Color3.fromRGB(240, 240, 240),
+	Placeholder = Color3.fromRGB(160, 160, 160),
+
+	ToggleOn = Color3.fromRGB(35, 120, 60),
+	ToggleOff = Color3.fromRGB(120, 40, 40),
+
+	Fill = Color3.fromRGB(120, 120, 120),
+	Knob = Color3.fromRGB(220, 220, 220),
+
+	CornerMain = 14,
+	Corner = 10,
+	CornerBtn = 8,
+}
+
+-- ========= UTILS =========
 local function waitForGlobals(timeoutSec)
 	local t0 = os.clock()
 	while os.clock() - t0 < (timeoutSec or 10) do
@@ -32,9 +60,25 @@ local function ensureTables(S, D)
 	S.Zones = S.Zones or {}
 	S.Rocks = S.Rocks or {}
 	S.Ores  = S.Ores  or {}
-
-	D.DATA = D.DATA or D -- allow passing raw DATA or wrapper
+	D.DATA = D.DATA or D
 	return S, D
+end
+
+local function addCorner(inst, px)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, px)
+	c.Parent = inst
+	return c
+end
+
+local function addPadding(inst, l, r, t, b)
+	local p = Instance.new("UIPadding")
+	p.PaddingLeft = UDim.new(0, l or 0)
+	p.PaddingRight = UDim.new(0, r or 0)
+	p.PaddingTop = UDim.new(0, t or 0)
+	p.PaddingBottom = UDim.new(0, b or 0)
+	p.Parent = inst
+	return p
 end
 
 local function makeText(parent, txt, size, bold)
@@ -45,7 +89,7 @@ local function makeText(parent, txt, size, bold)
 	t.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
 	t.TextXAlignment = Enum.TextXAlignment.Left
 	t.TextYAlignment = Enum.TextYAlignment.Center
-	t.TextColor3 = Color3.fromRGB(235, 235, 235)
+	t.TextColor3 = STYLE.Text
 	t.Parent = parent
 	return t
 end
@@ -54,22 +98,14 @@ local function makeButton(parent, txt, height)
 	local b = Instance.new("TextButton")
 	b.Text = txt
 	b.AutoButtonColor = true
-	b.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-	b.TextColor3 = Color3.fromRGB(240, 240, 240)
+	b.BackgroundColor3 = STYLE.ButtonBg
+	b.TextColor3 = STYLE.Text2
 	b.Font = Enum.Font.Gotham
 	b.TextSize = 14
 	b.Size = UDim2.new(1, 0, 0, height or 32)
 	b.Parent = parent
-
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, 8)
-	c.Parent = b
-
-	local p = Instance.new("UIPadding")
-	p.PaddingLeft = UDim.new(0, 10)
-	p.PaddingRight = UDim.new(0, 10)
-	p.Parent = b
-
+	addCorner(b, STYLE.CornerBtn)
+	addPadding(b, 10, 10, 0, 0)
 	return b
 end
 
@@ -77,43 +113,25 @@ local function makeSmallButton(parent, txt, w, h)
 	local b = Instance.new("TextButton")
 	b.Text = txt
 	b.AutoButtonColor = true
-	b.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
-	b.TextColor3 = Color3.fromRGB(240, 240, 240)
+	b.BackgroundColor3 = STYLE.ButtonBg2
+	b.TextColor3 = STYLE.Text2
 	b.Font = Enum.Font.Gotham
 	b.TextSize = 12
 	b.Size = UDim2.new(0, w or 70, 0, h or 26)
 	b.Parent = parent
-
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, 8)
-	c.Parent = b
-
-	local p = Instance.new("UIPadding")
-	p.PaddingLeft = UDim.new(0, 8)
-	p.PaddingRight = UDim.new(0, 8)
-	p.Parent = b
-
+	addCorner(b, STYLE.CornerBtn)
+	addPadding(b, 8, 8, 0, 0)
 	return b
 end
 
-local function makeFrame(parent, height)
+local function makeCard(parent, height)
 	local f = Instance.new("Frame")
-	f.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+	f.BackgroundColor3 = STYLE.CardBg
 	f.BorderSizePixel = 0
 	f.Size = UDim2.new(1, 0, 0, height or 32)
 	f.Parent = parent
-
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, 10)
-	c.Parent = f
-
-	local p = Instance.new("UIPadding")
-	p.PaddingLeft = UDim.new(0, 10)
-	p.PaddingRight = UDim.new(0, 10)
-	p.PaddingTop = UDim.new(0, 8)
-	p.PaddingBottom = UDim.new(0, 8)
-	p.Parent = f
-
+	addCorner(f, STYLE.Corner)
+	addPadding(f, 10, 10, 8, 8)
 	return f
 end
 
@@ -125,8 +143,9 @@ local function autoCanvas(scroll, layout)
 	update()
 end
 
+-- ========= COMPONENTS =========
 local function createToggleRow(parent, label, getValue, setValue)
-	local row = makeFrame(parent, 44)
+	local row = makeCard(parent, 44)
 
 	local left = Instance.new("TextLabel")
 	left.BackgroundTransparency = 1
@@ -134,7 +153,7 @@ local function createToggleRow(parent, label, getValue, setValue)
 	left.TextSize = 14
 	left.Font = Enum.Font.GothamBold
 	left.TextXAlignment = Enum.TextXAlignment.Left
-	left.TextColor3 = Color3.fromRGB(235, 235, 235)
+	left.TextColor3 = STYLE.Text
 	left.Size = UDim2.new(1, -120, 1, 0)
 	left.Parent = row
 
@@ -145,18 +164,15 @@ local function createToggleRow(parent, label, getValue, setValue)
 	toggle.TextSize = 14
 	toggle.BorderSizePixel = 0
 	toggle.Parent = row
-
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, 8)
-	c.Parent = toggle
+	addCorner(toggle, STYLE.CornerBtn)
 
 	local function refresh()
 		local v = getValue() and true or false
 		if v then
-			toggle.BackgroundColor3 = Color3.fromRGB(35, 120, 60)
+			toggle.BackgroundColor3 = STYLE.ToggleOn
 			toggle.Text = "ON"
 		else
-			toggle.BackgroundColor3 = Color3.fromRGB(120, 40, 40)
+			toggle.BackgroundColor3 = STYLE.ToggleOff
 			toggle.Text = "OFF"
 		end
 	end
@@ -170,7 +186,7 @@ local function createToggleRow(parent, label, getValue, setValue)
 	return row
 end
 
--- Drawer with: expand/collapse + Select All/Clear All + Search box
+-- Drawer: expand/collapse + SelectAll/Clear + Search + list
 local function createDrawer(parent, title, items, mapTable)
 	local holder = Instance.new("Frame")
 	holder.BackgroundTransparency = 1
@@ -182,7 +198,7 @@ local function createDrawer(parent, title, items, mapTable)
 	holderLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	holderLayout.Parent = holder
 
-	-- Header row frame
+	-- Header row
 	local headerRow = Instance.new("Frame")
 	headerRow.BackgroundTransparency = 1
 	headerRow.Size = UDim2.new(1, 0, 0, 36)
@@ -204,31 +220,20 @@ local function createDrawer(parent, title, items, mapTable)
 
 	-- Body
 	local body = Instance.new("Frame")
-	body.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+	body.BackgroundColor3 = STYLE.CardBg2
 	body.BorderSizePixel = 0
-	body.Size = UDim2.new(1, 0, 0, 280)
+	body.Size = UDim2.new(1, 0, 0, 290)
 	body.Visible = false
 	body.Parent = holder
-
-	do
-		local c = Instance.new("UICorner")
-		c.CornerRadius = UDim.new(0, 10)
-		c.Parent = body
-
-		local p = Instance.new("UIPadding")
-		p.PaddingLeft = UDim.new(0, 8)
-		p.PaddingRight = UDim.new(0, 8)
-		p.PaddingTop = UDim.new(0, 8)
-		p.PaddingBottom = UDim.new(0, 8)
-		p.Parent = body
-	end
+	addCorner(body, STYLE.Corner)
+	addPadding(body, 8, 8, 8, 8)
 
 	local bodyLayout = Instance.new("UIListLayout")
 	bodyLayout.Padding = UDim.new(0, 8)
 	bodyLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	bodyLayout.Parent = body
 
-	-- Search box row
+	-- Search
 	local searchRow = Instance.new("Frame")
 	searchRow.BackgroundTransparency = 1
 	searchRow.Size = UDim2.new(1, 0, 0, 30)
@@ -240,29 +245,20 @@ local function createDrawer(parent, title, items, mapTable)
 	searchBox.Text = ""
 	searchBox.TextSize = 14
 	searchBox.Font = Enum.Font.Gotham
-	searchBox.TextColor3 = Color3.fromRGB(240, 240, 240)
-	searchBox.PlaceholderColor3 = Color3.fromRGB(160, 160, 160)
+	searchBox.TextColor3 = STYLE.Text2
+	searchBox.PlaceholderColor3 = STYLE.Placeholder
 	searchBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 	searchBox.BorderSizePixel = 0
 	searchBox.Size = UDim2.new(1, 0, 1, 0)
 	searchBox.Parent = searchRow
+	addCorner(searchBox, STYLE.CornerBtn)
+	addPadding(searchBox, 10, 10, 0, 0)
 
-	do
-		local c = Instance.new("UICorner")
-		c.CornerRadius = UDim.new(0, 8)
-		c.Parent = searchBox
-
-		local p = Instance.new("UIPadding")
-		p.PaddingLeft = UDim.new(0, 10)
-		p.PaddingRight = UDim.new(0, 10)
-		p.Parent = searchBox
-	end
-
-	-- List scroll
+	-- List
 	local scroll = Instance.new("ScrollingFrame")
 	scroll.BackgroundTransparency = 1
 	scroll.BorderSizePixel = 0
-	scroll.Size = UDim2.new(1, 0, 1, -46) -- remaining after search row + padding/layout
+	scroll.Size = UDim2.new(1, 0, 1, -46)
 	scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 	scroll.ScrollBarThickness = 6
 	scroll.Parent = body
@@ -282,13 +278,10 @@ local function createDrawer(parent, title, items, mapTable)
 	end
 
 	for _, name in ipairs(items) do
-		if mapTable[name] == nil then
-			mapTable[name] = false
-		end
+		if mapTable[name] == nil then mapTable[name] = false end
 		local b = makeButton(scroll, "", 30)
 		b.TextXAlignment = Enum.TextXAlignment.Left
 		setItemText(b, name)
-
 		itemButtons[name] = b
 
 		b.MouseButton1Click:Connect(function()
@@ -299,29 +292,25 @@ local function createDrawer(parent, title, items, mapTable)
 
 	local function applyFilter()
 		local q = (searchBox.Text or ""):lower()
-		local anyVisible = false
 		for name, btn in pairs(itemButtons) do
-			local show = (q == "") or (name:lower():find(q, 1, true) ~= nil)
-			btn.Visible = show
-			if show then anyVisible = true end
+			btn.Visible = (q == "") or (name:lower():find(q, 1, true) ~= nil)
 		end
-		-- optional: if nothing visible, you still can scroll (no harm)
 	end
 
 	searchBox:GetPropertyChangedSignal("Text"):Connect(applyFilter)
 
 	allBtn.MouseButton1Click:Connect(function()
-		for name, _ in pairs(itemButtons) do
+		for name, btn in pairs(itemButtons) do
 			mapTable[name] = true
-			setItemText(itemButtons[name], name)
+			setItemText(btn, name)
 		end
 		applyFilter()
 	end)
 
 	noneBtn.MouseButton1Click:Connect(function()
-		for name, _ in pairs(itemButtons) do
+		for name, btn in pairs(itemButtons) do
 			mapTable[name] = false
-			setItemText(itemButtons[name], name)
+			setItemText(btn, name)
 		end
 		applyFilter()
 	end)
@@ -331,22 +320,19 @@ local function createDrawer(parent, title, items, mapTable)
 		expanded = v and true or false
 		body.Visible = expanded
 		titleBtn.Text = (expanded and "▾  " or "▸  ") .. title
-		if expanded then
-			applyFilter()
-		end
+		if expanded then applyFilter() end
 	end
 
 	titleBtn.MouseButton1Click:Connect(function()
 		setExpanded(not expanded)
 	end)
 
-	-- Start collapsed
 	setExpanded(false)
 	return holder
 end
 
 local function createSlider(parent, label, minVal, maxVal, step, getValue, setValue)
-	local row = makeFrame(parent, 60)
+	local row = makeCard(parent, 60)
 
 	local title = Instance.new("TextLabel")
 	title.BackgroundTransparency = 1
@@ -354,7 +340,7 @@ local function createSlider(parent, label, minVal, maxVal, step, getValue, setVa
 	title.TextSize = 14
 	title.Font = Enum.Font.GothamBold
 	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.TextColor3 = Color3.fromRGB(235, 235, 235)
+	title.TextColor3 = STYLE.Text
 	title.Size = UDim2.new(1, -60, 0, 18)
 	title.Parent = row
 
@@ -364,7 +350,7 @@ local function createSlider(parent, label, minVal, maxVal, step, getValue, setVa
 	valueLbl.TextSize = 14
 	valueLbl.Font = Enum.Font.Gotham
 	valueLbl.TextXAlignment = Enum.TextXAlignment.Right
-	valueLbl.TextColor3 = Color3.fromRGB(235, 235, 235)
+	valueLbl.TextColor3 = STYLE.Text
 	valueLbl.Size = UDim2.new(0, 60, 0, 18)
 	valueLbl.Position = UDim2.new(1, -60, 0, 0)
 	valueLbl.Parent = row
@@ -375,31 +361,22 @@ local function createSlider(parent, label, minVal, maxVal, step, getValue, setVa
 	bar.Size = UDim2.new(1, 0, 0, 10)
 	bar.Position = UDim2.new(0, 0, 0, 32)
 	bar.Parent = row
-
-	local barCorner = Instance.new("UICorner")
-	barCorner.CornerRadius = UDim.new(0, 6)
-	barCorner.Parent = bar
+	addCorner(bar, 6)
 
 	local fill = Instance.new("Frame")
-	fill.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
+	fill.BackgroundColor3 = STYLE.Fill
 	fill.BorderSizePixel = 0
 	fill.Size = UDim2.new(0, 0, 1, 0)
 	fill.Parent = bar
-
-	local fillCorner = Instance.new("UICorner")
-	fillCorner.CornerRadius = UDim.new(0, 6)
-	fillCorner.Parent = fill
+	addCorner(fill, 6)
 
 	local knob = Instance.new("Frame")
-	knob.BackgroundColor3 = Color3.fromRGB(220, 220, 220)
+	knob.BackgroundColor3 = STYLE.Knob
 	knob.BorderSizePixel = 0
 	knob.Size = UDim2.new(0, 14, 0, 14)
 	knob.Position = UDim2.new(0, -7, 0.5, -7)
 	knob.Parent = bar
-
-	local knobCorner = Instance.new("UICorner")
-	knobCorner.CornerRadius = UDim.new(1, 0)
-	knobCorner.Parent = knob
+	addCorner(knob, 999)
 
 	local dragging = false
 
@@ -452,9 +429,10 @@ local function createSlider(parent, label, minVal, maxVal, step, getValue, setVa
 	end)
 
 	refresh()
-	return row, refresh
+	return row
 end
 
+-- ========= MAIN =========
 function M.Start(S, D)
 	if _G.__ForgeGUIMiniLoaded then return end
 	_G.__ForgeGUIMiniLoaded = true
@@ -475,7 +453,6 @@ function M.Start(S, D)
 	local player = Players.LocalPlayer
 	local pg = player:WaitForChild("PlayerGui")
 
-	-- remove older
 	local old = pg:FindFirstChild("Forge_GUI_Mini")
 	if old then old:Destroy() end
 
@@ -488,27 +465,17 @@ function M.Start(S, D)
 	local main = Instance.new("Frame")
 	main.Size = UDim2.new(0, 420, 0, 520)
 	main.Position = UDim2.new(0, 20, 0.5, -260)
-	main.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	main.BackgroundColor3 = STYLE.MainBg
 	main.BorderSizePixel = 0
 	main.Parent = gui
+	addCorner(main, STYLE.CornerMain)
 
-	do
-		local c = Instance.new("UICorner")
-		c.CornerRadius = UDim.new(0, 14)
-		c.Parent = main
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 1
+	stroke.Color = STYLE.Stroke
+	stroke.Parent = main
 
-		local stroke = Instance.new("UIStroke")
-		stroke.Thickness = 1
-		stroke.Color = Color3.fromRGB(70, 70, 70)
-		stroke.Parent = main
-
-		local pad = Instance.new("UIPadding")
-		pad.PaddingLeft = UDim.new(0, 12)
-		pad.PaddingRight = UDim.new(0, 12)
-		pad.PaddingTop = UDim.new(0, 12)
-		pad.PaddingBottom = UDim.new(0, 12)
-		pad.Parent = main
-	end
+	addPadding(main, 12, 12, 12, 12)
 
 	-- Header
 	local header = Instance.new("Frame")
@@ -516,8 +483,12 @@ function M.Start(S, D)
 	header.Size = UDim2.new(1, 0, 0, 36)
 	header.Parent = main
 
+	-- IMPORTANT: enable input on header for drag
+	header.Active = true
+
 	local title = makeText(header, "Forge", 18, true)
 	title.Size = UDim2.new(1, -120, 1, 0)
+	title.Active = true -- allow title to receive InputBegan too
 
 	local tabs = Instance.new("Frame")
 	tabs.BackgroundTransparency = 1
@@ -559,11 +530,11 @@ function M.Start(S, D)
 			miningFrame.Visible = true
 			settingFrame.Visible = false
 			btnMining.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-			btnSetting.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+			btnSetting.BackgroundColor3 = STYLE.ButtonBg
 		else
 			miningFrame.Visible = false
 			settingFrame.Visible = true
-			btnMining.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+			btnMining.BackgroundColor3 = STYLE.ButtonBg
 			btnSetting.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 		end
 	end
@@ -572,7 +543,7 @@ function M.Start(S, D)
 	btnSetting.MouseButton1Click:Connect(function() showTab("Setting") end)
 	showTab("Mining")
 
-	-- Scroll for Mining tab
+	-- Mining scroll
 	local miningScroll = Instance.new("ScrollingFrame")
 	miningScroll.BackgroundTransparency = 1
 	miningScroll.BorderSizePixel = 0
@@ -587,7 +558,6 @@ function M.Start(S, D)
 	miningList.Parent = miningScroll
 	autoCanvas(miningScroll, miningList)
 
-	-- Mining tab content
 	createToggleRow(miningScroll, "Auto Mining", function()
 		return S.AutoFarm == true
 	end, function(v)
@@ -598,7 +568,7 @@ function M.Start(S, D)
 	createDrawer(miningScroll, "Filter Rock", DATA.Rocks or {}, S.Rocks)
 	createDrawer(miningScroll, "Filter Ore",  DATA.Ores  or {}, S.Ores)
 
-	-- Scroll for Setting tab
+	-- Setting scroll
 	local settingScroll = Instance.new("ScrollingFrame")
 	settingScroll.BackgroundTransparency = 1
 	settingScroll.BorderSizePixel = 0
@@ -613,7 +583,6 @@ function M.Start(S, D)
 	settingList.Parent = settingScroll
 	autoCanvas(settingScroll, settingList)
 
-	-- Setting tab sliders
 	createSlider(settingScroll, "TweenSpeed", 5, 200, 1,
 		function() return S.TweenSpeed or 55 end,
 		function(v) S.TweenSpeed = v end
@@ -624,57 +593,82 @@ function M.Start(S, D)
 		function(v) S.YOffset = v end
 	)
 
-	-- ========= DRAG WINDOW (HEADER ONLY, DOES NOT BLOCK BUTTONS) =========
+	-- ========= DRAG WINDOW (works reliably) =========
 	local dragging = false
+	local dragInput = nil
 	local dragStart = nil
 	local startPos = nil
 
-	local function isInteractiveTarget(inst)
-		if not inst then return false end
-		return inst:IsA("TextButton") or inst:IsA("ImageButton") or inst:IsA("TextBox")
+	local function isInteractive(inst)
+		return inst and (inst:IsA("TextButton") or inst:IsA("ImageButton") or inst:IsA("TextBox"))
+	end
+
+	local function canStartDrag(target)
+		if UserInputService:GetFocusedTextBox() then return false end
+		if not target then return true end
+		if isInteractive(target) then return false end
+		if tabs and target:IsDescendantOf(tabs) then return false end
+		return true
+	end
+
+	local function beginDrag(input)
+		if not canStartDrag(input.Target) then return end
+		dragging = true
+		dragInput = input
+		dragStart = input.Position
+		startPos = main.Position
+	end
+
+	local function endDrag(input)
+		if input == dragInput then
+			dragging = false
+			dragInput = nil
+		end
 	end
 
 	header.InputBegan:Connect(function(input)
-		if input.UserInputType ~= Enum.UserInputType.MouseButton1
-			and input.UserInputType ~= Enum.UserInputType.Touch then
-			return
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+			beginDrag(input)
 		end
-
-		-- Kalau klik di tombol/tab/textbox, jangan mulai drag
-		if isInteractiveTarget(input.Target) then
-			return
-		end
-		-- Kalau target adalah child dari tabs (Mining/Setting), jangan drag
-		if input.Target and input.Target:IsDescendantOf(tabs) then
-			return
-		end
-
-		dragging = true
-		dragStart = input.Position
-		startPos = main.Position
 	end)
 
 	header.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = false
+		or input.UserInputType == Enum.UserInputType.Touch then
+			endDrag(input)
+		end
+	end)
+
+	-- klik teks "Forge" juga bisa drag
+	title.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+			beginDrag(input)
+		end
+	end)
+
+	title.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+			endDrag(input)
 		end
 	end)
 
 	UserInputService.InputChanged:Connect(function(input)
 		if not dragging then return end
-		if input.UserInputType ~= Enum.UserInputType.MouseMovement
-			and input.UserInputType ~= Enum.UserInputType.Touch then
-			return
+		if input ~= dragInput then return end
+		if input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch then
+			local delta = input.Position - dragStart
+			main.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			)
 		end
-		local delta = input.Position - dragStart
-		main.Position = UDim2.new(
-			startPos.X.Scale, startPos.X.Offset + delta.X,
-			startPos.Y.Scale, startPos.Y.Offset + delta.Y
-		)
 	end)
 
-	print("[✓] Forge GUI Mini loaded (drag + select all/clear + search).")
+	print("[✓] Forge GUI Mini loaded (drag + drawers tools).")
 end
 
 -- Auto-run
