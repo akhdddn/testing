@@ -352,7 +352,7 @@ function M.Start(Settings, DATA)
 		if oreType == nil then
 			if oresAny and Settings.AllowUnknownOreAboveReveal then
 				local hpPct = GetHealthPct(rockModel)
-				local thr = tonumber(Settings.OreRevealThreshold) or 50
+				local thr = tonumber(Settings.OreRevealThreshold) or 45
 				if hpPct ~= nil and hpPct > thr then
 					return true
 				end
