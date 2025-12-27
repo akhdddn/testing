@@ -140,7 +140,13 @@ function M.Start(Settings, DATA)
 	local prevCamType = nil
 
 	local function StopCameraStabilize()
-		if camConn then camConn:Disconnect() end
+		-- NOTE: ini mengikuti versi kamu (BindToRenderStep tidak return connection).
+		-- Kalau kamu mau stop benar-benar bersih, ganti ke UnbindFromRenderStep.
+		if camConn then
+			pcall(function()
+				camConn:Disconnect()
+			end)
+		end
 		camConn = nil
 		if cam and prevCamType then
 			cam.CameraType = prevCamType
@@ -165,27 +171,31 @@ function M.Start(Settings, DATA)
 		local offset = Settings.CameraOffset or Vector3.new(0, 10, 18)
 		local lastCF = cam.CFrame
 
-		camConn = RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function()
-			local _, r = GetCharAndRoot()
-			if not (r and r.Parent and cam) then return end
+		camConn = RunService:BindToRenderStep(
+			CAMERA_BIND_NAME,
+			Enum.RenderPriority.Camera.Value + 1,
+			function()
+				local _, r = GetCharAndRoot()
+				if not (r and r.Parent and cam) then return end
 
-			local targetPos
-			if offsetMode == "Relative" then
-				targetPos = (r.CFrame * CFrame.new(offset)).Position
-			else
-				targetPos = r.Position + offset
+				local targetPos
+				if offsetMode == "Relative" then
+					targetPos = (r.CFrame * CFrame.new(offset)).Position
+				else
+					targetPos = r.Position + offset
+				end
+
+				local lookAt = r.Position
+				local wanted = CFrame.lookAt(targetPos, lookAt)
+
+				if alpha >= 1 then
+					lastCF = wanted
+				else
+					lastCF = lastCF:Lerp(wanted, math.clamp(alpha, 0, 1))
+				end
+				cam.CFrame = lastCF
 			end
-
-			local lookAt = r.Position
-			local wanted = CFrame.lookAt(targetPos, lookAt)
-
-			if alpha >= 1 then
-				lastCF = wanted
-			else
-				lastCF = lastCF:Lerp(wanted, math.clamp(alpha, 0, 1))
-			end
-			cam.CFrame = lastCF
-		end)
+		)
 	end
 
 	-- ========= TOOL REMOTE =========
@@ -253,23 +263,64 @@ function M.Start(Settings, DATA)
 		return (maxHP > 0) and ((curHP / maxHP) * 100) or 100
 	end
 
-	-- ========= LAST HIT PLAYER OWNERSHIP (SIMPLE CHECK) =========
+	-- ========= LAST HIT OWNERSHIP (FIXED: allow owned-by-me) =========
 	local function GetLastHitOwner(model)
 		local v = model:GetAttribute("LastHitPlayer")
 		if v == nil then v = model:GetAttribute("LastHitUserId") end
 		if v == nil then v = model:GetAttribute("LastHitBy") end
 		if v == nil then v = model:GetAttribute("LastHitter") end
+		-- optional common fallbacks (aman, kalau tidak ada ya nil)
+		if v == nil then v = model:GetAttribute("OwnerUserId") end
+		if v == nil then v = model:GetAttribute("Owner") end
 		return v
 	end
 
-	local function RockIsUnowned(model)
+	local function IsOwnerMe(owner)
+		if owner == nil then return false end
+
+		-- Player instance
+		if typeof(owner) == "Instance" and owner:IsA("Player") then
+			return owner == Player
+		end
+
+		-- UserId number
+		if type(owner) == "number" then
+			return owner == Player.UserId
+		end
+
+		-- String: userId / Name / DisplayName
+		if type(owner) == "string" then
+			local n = tonumber(owner)
+			if n then
+				return n == Player.UserId
+			end
+			local s = owner:lower()
+			if Player.Name and s == Player.Name:lower() then return true end
+			if Player.DisplayName and s == Player.DisplayName:lower() then return true end
+		end
+
+		return false
+	end
+
+	-- Allowed = unowned OR mine (when RespectLastHitPlayer enabled)
+	local function RockIsAllowed(model)
 		if Settings.RespectLastHitPlayer ~= true then
 			return true
 		end
+
 		local owner = GetLastHitOwner(model)
+
+		-- unowned cases
 		if owner == nil then return true end
 		if owner == "" then return true end
 		if owner == 0 then return true end
+
+		-- owned by me is OK
+		if IsOwnerMe(owner) then
+			return true
+		end
+
+		-- someone else's
 		return false
 	end
 
@@ -621,7 +672,7 @@ function M.Start(Settings, DATA)
 			if model and model.Parent then
 				if allowAllZones or Settings.Zones[e.zoneName] == true then
 					if allowAllRocks or Settings.Rocks[model.Name] == true then
-						if RockIsUnowned(model) then
+						if RockIsAllowed(model) then
 							if RockMatchesOreSelection(model, e.oreType) then
 								if IsRockAliveEnough(model) then
 									local part = e.part
@@ -770,8 +821,8 @@ function M.Start(Settings, DATA)
 						targetInvalid = true
 					end
 
-					-- ownership re-check
-					if (not targetInvalid) and (not RockIsUnowned(rockModel)) then
+					-- ownership re-check (FIXED)
+					if (not targetInvalid) and (not RockIsAllowed(rockModel)) then
 						targetInvalid = true
 					end
 
