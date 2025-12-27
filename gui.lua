@@ -1,16 +1,18 @@
--- Forge GUI Mini (Full)
+-- Forge GUI Mini lprxsw (Mobile + PC optimized)
 -- Tabs:
---  1) Mining: AutoMining toggle + drawers (Zone/Rock/Ore) with SelectAll/Clear/Search
---  2) Setting: TweenSpeed slider + YOffset slider
--- Drag:
---  - Drag window by header area or title text. Does NOT interfere with buttons/textboxes.
+--  1) Mining: Auto Mining toggle + drawers (Zone/Rock/Ore) with Search + SelectAll + Clear
+--  2) Setting: TweenSpeed slider (20..80) + YOffset slider (-7..7)
+-- Controls:
+--  - Drag window: drag Top Bar background (not the buttons)
+--  - Minimize: click "_" or press "L"
+--  - Close (hide): click "X" (shows floating "Forge" button to reopen)
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 
 local M = {}
 
--- ========= STYLE (ubah di sini kalau mau mirip GUI lamamu) =========
+-- ========= STYLE =========
 local STYLE = {
 	MainBg = Color3.fromRGB(20, 20, 20),
 	CardBg = Color3.fromRGB(35, 35, 35),
@@ -109,11 +111,11 @@ local function makeButton(parent, txt, height)
 	return b
 end
 
-local function makeSmallButton(parent, txt, w, h)
+local function makeSmallButton(parent, txt, w, h, bgOverride)
 	local b = Instance.new("TextButton")
 	b.Text = txt
 	b.AutoButtonColor = true
-	b.BackgroundColor3 = STYLE.ButtonBg2
+	b.BackgroundColor3 = bgOverride or STYLE.ButtonBg2
 	b.TextColor3 = STYLE.Text2
 	b.Font = Enum.Font.Gotham
 	b.TextSize = 12
@@ -141,6 +143,10 @@ local function autoCanvas(scroll, layout)
 	end
 	layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(update)
 	update()
+end
+
+local function isInteractive(inst)
+	return inst and (inst:IsA("TextButton") or inst:IsA("ImageButton") or inst:IsA("TextBox"))
 end
 
 -- ========= COMPONENTS =========
@@ -186,7 +192,6 @@ local function createToggleRow(parent, label, getValue, setValue)
 	return row
 end
 
--- Drawer: expand/collapse + SelectAll/Clear + Search + list
 local function createDrawer(parent, title, items, mapTable)
 	local holder = Instance.new("Frame")
 	holder.BackgroundTransparency = 1
@@ -215,8 +220,8 @@ local function createDrawer(parent, title, items, mapTable)
 	titleBtn.TextXAlignment = Enum.TextXAlignment.Left
 	titleBtn.Size = UDim2.new(1, -160, 0, 36)
 
-	local allBtn = makeSmallButton(headerRow, "Select All", 76, 26)
-	local noneBtn = makeSmallButton(headerRow, "Clear", 64, 26)
+	local allBtn = makeSmallButton(headerRow, "Select", 60, 26)
+	local noneBtn = makeSmallButton(headerRow, "Clear", 60, 26)
 
 	-- Body
 	local body = Instance.new("Frame")
@@ -267,7 +272,6 @@ local function createDrawer(parent, title, items, mapTable)
 	list.Padding = UDim.new(0, 6)
 	list.SortOrder = Enum.SortOrder.LayoutOrder
 	list.Parent = scroll
-
 	autoCanvas(scroll, list)
 
 	local itemButtons = {} -- name -> button
@@ -434,8 +438,8 @@ end
 
 -- ========= MAIN =========
 function M.Start(S, D)
-	if _G.__ForgeGUIMiniLoaded then return end
-	_G.__ForgeGUIMiniLoaded = true
+	if _G.__ForgeGUIMiniLoaded_lprxsw then return end
+	_G.__ForgeGUIMiniLoaded_lprxsw = true
 
 	S = S or _G.Settings
 	D = D or _G.DATA
@@ -443,7 +447,7 @@ function M.Start(S, D)
 		S, D = waitForGlobals(12)
 	end
 	if type(S) ~= "table" or type(D) ~= "table" then
-		warn("[ForgeGUI Mini] _G.Settings/_G.DATA not found.")
+		warn("[ForgeGUI Mini lprxsw] _G.Settings/_G.DATA not found.")
 		return
 	end
 
@@ -453,18 +457,50 @@ function M.Start(S, D)
 	local player = Players.LocalPlayer
 	local pg = player:WaitForChild("PlayerGui")
 
-	local old = pg:FindFirstChild("Forge_GUI_Mini")
+	local old = pg:FindFirstChild("Forge_GUI_Mini_lprxsw")
 	if old then old:Destroy() end
 
 	local gui = Instance.new("ScreenGui")
-	gui.Name = "Forge_GUI_Mini"
+	gui.Name = "Forge_GUI_Mini_lprxsw"
 	gui.ResetOnSpawn = false
 	gui.IgnoreGuiInset = true
 	gui.Parent = pg
 
+	-- === responsive scale ===
+	local cam = workspace.CurrentCamera
+	local vw = cam and cam.ViewportSize.X or 800
+	local vh = cam and cam.ViewportSize.Y or 600
+	local isMobile = UserInputService.TouchEnabled and (not UserInputService.KeyboardEnabled)
+
+	local uiScale = Instance.new("UIScale")
+	uiScale.Parent = gui
+	do
+		-- scale down on very small screens
+		local s = 1
+		if vw < 520 or vh < 520 then s = 0.9 end
+		if vw < 420 or vh < 420 then s = 0.82 end
+		uiScale.Scale = s
+	end
+
+	-- Floating button (reopen when closed/hidden)
+	local floatBtn = Instance.new("TextButton")
+	floatBtn.Name = "ForgeFloat"
+	floatBtn.Text = "Forge"
+	floatBtn.Font = Enum.Font.GothamBold
+	floatBtn.TextSize = 14
+	floatBtn.TextColor3 = STYLE.Text2
+	floatBtn.BackgroundColor3 = STYLE.ButtonBg
+	floatBtn.BorderSizePixel = 0
+	floatBtn.Size = UDim2.new(0, 74, 0, 44)
+	floatBtn.Position = UDim2.new(1, -86, 1, -74)
+	floatBtn.Visible = false
+	floatBtn.Parent = gui
+	addCorner(floatBtn, 14)
+
+	-- Main window
 	local main = Instance.new("Frame")
 	main.Size = UDim2.new(0, 420, 0, 520)
-	main.Position = UDim2.new(0, 20, 0.5, -260)
+	main.Position = isMobile and UDim2.new(0.5, -210, 0.5, -260) or UDim2.new(0, 20, 0.5, -260)
 	main.BackgroundColor3 = STYLE.MainBg
 	main.BorderSizePixel = 0
 	main.Parent = gui
@@ -477,68 +513,113 @@ function M.Start(S, D)
 
 	addPadding(main, 12, 12, 12, 12)
 
-	-- Header
-	local header = Instance.new("Frame")
-	header.BackgroundTransparency = 1
-	header.Size = UDim2.new(1, 0, 0, 36)
-	header.Parent = main
+	-- Keep in bounds on resize
+	local function clampToViewport()
+		local cam2 = workspace.CurrentCamera
+		if not cam2 then return end
+		local vp = cam2.ViewportSize
+		local abs = main.AbsoluteSize
+		local pos = main.Position
+		-- we only clamp offsets for simplicity since we use mostly offset positioning
+		local x = pos.X.Offset
+		local y = pos.Y.Offset
+		local minX, minY = 6, 6
+		local maxX = math.max(minX, vp.X - abs.X - 6)
+		local maxY = math.max(minY, vp.Y - abs.Y - 6)
+		main.Position = UDim2.new(pos.X.Scale, clamp(x, minX, maxX), pos.Y.Scale, clamp(y, minY, maxY))
+	end
+	task.defer(function()
+		task.wait(0.1)
+		clampToViewport()
+	end)
 
-	-- IMPORTANT: enable input on header for drag
-	header.Active = true
+	-- Top bar (with drag + buttons)
+	local top = Instance.new("Frame")
+	top.BackgroundTransparency = 1
+	top.Size = UDim2.new(1, 0, 0, 38)
+	top.Parent = main
+	top.Active = true -- important for drag input
 
-	local title = makeText(header, "Forge", 18, true)
-	title.Size = UDim2.new(1, -120, 1, 0)
-	title.Active = true -- allow title to receive InputBegan too
+	local title = makeText(top, "Forge | lprxsw", 16, true)
+	title.Size = UDim2.new(1, -130, 1, 0)
+	title.Active = true
 
-	local tabs = Instance.new("Frame")
-	tabs.BackgroundTransparency = 1
-	tabs.Size = UDim2.new(0, 210, 1, 0)
-	tabs.Position = UDim2.new(1, -210, 0, 0)
-	tabs.Parent = header
+	local btnArea = Instance.new("Frame")
+	btnArea.BackgroundTransparency = 1
+	btnArea.Size = UDim2.new(0, 120, 1, 0)
+	btnArea.Position = UDim2.new(1, -120, 0, 0)
+	btnArea.Parent = top
 
-	local tabsLayout = Instance.new("UIListLayout")
-	tabsLayout.FillDirection = Enum.FillDirection.Horizontal
-	tabsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
-	tabsLayout.Padding = UDim.new(0, 8)
-	tabsLayout.Parent = tabs
+	local btnLayout = Instance.new("UIListLayout")
+	btnLayout.FillDirection = Enum.FillDirection.Horizontal
+	btnLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	btnLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	btnLayout.Padding = UDim.new(0, 8)
+	btnLayout.Parent = btnArea
 
-	local btnMining = makeButton(tabs, "Mining", 30)
-	btnMining.Size = UDim2.new(0, 95, 0, 30)
-	local btnSetting = makeButton(tabs, "Setting", 30)
-	btnSetting.Size = UDim2.new(0, 95, 0, 30)
+	local minimizeBtn = makeSmallButton(btnArea, "_", 44, 26)
+	minimizeBtn.TextSize = 16
 
-	-- Content wrapper
+	local closeBtn = makeSmallButton(btnArea, "X", 44, 26, Color3.fromRGB(110, 45, 45))
+	closeBtn.TextSize = 14
+
+	-- Content wrapper (tabs + pages)
 	local content = Instance.new("Frame")
 	content.BackgroundTransparency = 1
-	content.Size = UDim2.new(1, 0, 1, -44)
-	content.Position = UDim2.new(0, 0, 0, 44)
+	content.Size = UDim2.new(1, 0, 1, -46)
+	content.Position = UDim2.new(0, 0, 0, 46)
 	content.Parent = main
 
-	local miningFrame = Instance.new("Frame")
-	miningFrame.BackgroundTransparency = 1
-	miningFrame.Size = UDim2.new(1, 0, 1, 0)
-	miningFrame.Parent = content
+	-- Tabs row
+	local tabRow = Instance.new("Frame")
+	tabRow.BackgroundTransparency = 1
+	tabRow.Size = UDim2.new(1, 0, 0, 34)
+	tabRow.Parent = content
 
-	local settingFrame = Instance.new("Frame")
-	settingFrame.BackgroundTransparency = 1
-	settingFrame.Size = UDim2.new(1, 0, 1, 0)
-	settingFrame.Visible = false
-	settingFrame.Parent = content
+	local tabLayout = Instance.new("UIListLayout")
+	tabLayout.FillDirection = Enum.FillDirection.Horizontal
+	tabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+	tabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	tabLayout.Padding = UDim.new(0, 8)
+	tabLayout.Parent = tabRow
+
+	local btnMining = makeButton(tabRow, "Mining", 30)
+	btnMining.Size = UDim2.new(0, 100, 0, 30)
+
+	local btnSetting = makeButton(tabRow, "Setting", 30)
+	btnSetting.Size = UDim2.new(0, 100, 0, 30)
+
+	-- Pages container
+	local pages = Instance.new("Frame")
+	pages.BackgroundTransparency = 1
+	pages.Size = UDim2.new(1, 0, 1, -42)
+	pages.Position = UDim2.new(0, 0, 0, 42)
+	pages.Parent = content
+
+	local miningPage = Instance.new("Frame")
+	miningPage.BackgroundTransparency = 1
+	miningPage.Size = UDim2.new(1, 0, 1, 0)
+	miningPage.Parent = pages
+
+	local settingPage = Instance.new("Frame")
+	settingPage.BackgroundTransparency = 1
+	settingPage.Size = UDim2.new(1, 0, 1, 0)
+	settingPage.Visible = false
+	settingPage.Parent = pages
 
 	local function showTab(which)
 		if which == "Mining" then
-			miningFrame.Visible = true
-			settingFrame.Visible = false
+			miningPage.Visible = true
+			settingPage.Visible = false
 			btnMining.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 			btnSetting.BackgroundColor3 = STYLE.ButtonBg
 		else
-			miningFrame.Visible = false
-			settingFrame.Visible = true
+			miningPage.Visible = false
+			settingPage.Visible = true
 			btnMining.BackgroundColor3 = STYLE.ButtonBg
 			btnSetting.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 		end
 	end
-
 	btnMining.MouseButton1Click:Connect(function() showTab("Mining") end)
 	btnSetting.MouseButton1Click:Connect(function() showTab("Setting") end)
 	showTab("Mining")
@@ -550,7 +631,7 @@ function M.Start(S, D)
 	miningScroll.Size = UDim2.new(1, 0, 1, 0)
 	miningScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 	miningScroll.ScrollBarThickness = 6
-	miningScroll.Parent = miningFrame
+	miningScroll.Parent = miningPage
 
 	local miningList = Instance.new("UIListLayout")
 	miningList.Padding = UDim.new(0, 10)
@@ -575,7 +656,7 @@ function M.Start(S, D)
 	settingScroll.Size = UDim2.new(1, 0, 1, 0)
 	settingScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 	settingScroll.ScrollBarThickness = 6
-	settingScroll.Parent = settingFrame
+	settingScroll.Parent = settingPage
 
 	local settingList = Instance.new("UIListLayout")
 	settingList.Padding = UDim.new(0, 10)
@@ -583,31 +664,81 @@ function M.Start(S, D)
 	settingList.Parent = settingScroll
 	autoCanvas(settingScroll, settingList)
 
-	createSlider(settingScroll, "TweenSpeed", 5, 200, 1,
+	-- REQUIRED bounds:
+	createSlider(settingScroll, "TweenSpeed", 20, 80, 1,
 		function() return S.TweenSpeed or 55 end,
 		function(v) S.TweenSpeed = v end
 	)
 
-	createSlider(settingScroll, "YOffset", -10, 30, 0.5,
+	createSlider(settingScroll, "YOffset", -7, 7, 0.5,
 		function() return S.YOffset or 3 end,
 		function(v) S.YOffset = v end
 	)
 
-	-- ========= DRAG WINDOW (works reliably) =========
+	-- ========= MINIMIZE + CLOSE =========
+	local minimized = false
+	local storedSize = main.Size
+	local storedContentVisible = content.Visible
+
+	local function setMinimized(v)
+		minimized = (v == true)
+		if minimized then
+			storedSize = main.Size
+			storedContentVisible = content.Visible
+			content.Visible = false
+			main.Size = UDim2.new(main.Size.X.Scale, main.Size.X.Offset, 0, 62) -- only top + padding
+		else
+			main.Size = storedSize or UDim2.new(0, 420, 0, 520)
+			content.Visible = storedContentVisible ~= false
+		end
+		task.defer(clampToViewport)
+	end
+
+	minimizeBtn.MouseButton1Click:Connect(function()
+		setMinimized(not minimized)
+	end)
+
+	local function setClosed(hidden)
+		if hidden then
+			main.Visible = false
+			floatBtn.Visible = true
+		else
+			main.Visible = true
+			floatBtn.Visible = false
+			task.defer(clampToViewport)
+		end
+	end
+
+	closeBtn.MouseButton1Click:Connect(function()
+		setClosed(true)
+	end)
+
+	floatBtn.MouseButton1Click:Connect(function()
+		setClosed(false)
+	end)
+
+	-- Hotkey L = minimize/restore
+	UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then return end
+		if input.KeyCode == Enum.KeyCode.L then
+			-- only toggle if window is visible
+			if main.Visible then
+				setMinimized(not minimized)
+			end
+		end
+	end)
+
+	-- ========= DRAG (Top Bar background) =========
 	local dragging = false
 	local dragInput = nil
 	local dragStart = nil
 	local startPos = nil
 
-	local function isInteractive(inst)
-		return inst and (inst:IsA("TextButton") or inst:IsA("ImageButton") or inst:IsA("TextBox"))
-	end
-
 	local function canStartDrag(target)
 		if UserInputService:GetFocusedTextBox() then return false end
 		if not target then return true end
 		if isInteractive(target) then return false end
-		if tabs and target:IsDescendantOf(tabs) then return false end
+		if btnArea and target:IsDescendantOf(btnArea) then return false end
 		return true
 	end
 
@@ -623,24 +754,24 @@ function M.Start(S, D)
 		if input == dragInput then
 			dragging = false
 			dragInput = nil
+			task.defer(clampToViewport)
 		end
 	end
 
-	header.InputBegan:Connect(function(input)
+	top.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 			beginDrag(input)
 		end
 	end)
 
-	header.InputEnded:Connect(function(input)
+	top.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 			endDrag(input)
 		end
 	end)
 
-	-- klik teks "Forge" juga bisa drag
 	title.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
@@ -668,7 +799,13 @@ function M.Start(S, D)
 		end
 	end)
 
-	print("[✓] Forge GUI Mini loaded (drag + drawers tools).")
+	-- Mobile convenience: start slightly smaller & centered; float button not shown unless closed
+	if isMobile then
+		-- keep it centered; users can drag if they want
+		main.Position = UDim2.new(0.5, -210, 0.5, -260)
+	end
+
+	print("[✓] Forge GUI Mini lprxsw loaded.")
 end
 
 -- Auto-run
