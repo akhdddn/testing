@@ -1,7 +1,11 @@
 -- ReplicatedStorage/ForgeCore (ModuleScript)
 -- FULL: TweenSpeed = studs/sec (always tween when moving) + MULTI-ORE FIX
--- Ore nodes can be multiple. Each Ore node is a Model/Folder named "Ore" with Attribute "Ore" = ore name (string).
--- Also supports StringValue named "Ore" (compat).
+-- + CAMERA FIX: player can still rotate/zoom camera while mining (uses Humanoid.CameraOffset, NOT Scriptable cam)
+--
+-- Notes:
+-- - CameraStabilize now means "apply CameraOffset while mining/locked" (camera remains Custom).
+-- - CameraOffsetMode is not used anymore (kept for compatibility with settings; ignored).
+-- - If your offset feels inverted, change CameraOffset Z to negative in ForgeSettings (e.g. Vector3.new(0,10,-18)).
 
 local M = {}
 
@@ -14,7 +18,7 @@ function M.Start(Settings, DATA)
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 	local Player = Players.LocalPlayer
-	local CAMERA_BIND_NAME = "Forge_CameraFollow_Optim"
+	local CAMERA_BIND_NAME = "Forge_CameraFollow_Optim" -- kept for compatibility
 
 	-- ========= DEBUG =========
 	_G.ForgeDebug = (_G.ForgeDebug ~= nil) and _G.ForgeDebug or false
@@ -138,23 +142,32 @@ function M.Start(Settings, DATA)
 		cacheCharacterParts(c)
 	end)
 
-	-- ========= CAMERA STABILIZER =========
-	local camConn = nil
-	local cam = Workspace.CurrentCamera
+	-- ========= CAMERA (FIX: allow player control) =========
+	-- Instead of Scriptable camera + forcing CFrame each frame (which locks mouse look),
+	-- we apply Humanoid.CameraOffset while mining/locked, keeping CameraType.Custom.
 	local prevCamType = nil
+	local prevHumCamOffset = nil
+	local cameraApplied = false
 
 	local function StopCameraStabilize()
-		-- kept for compatibility
-		if camConn then
-			pcall(function()
-				camConn:Disconnect()
-			end)
-		end
-		camConn = nil
+		-- In case older code bound RenderStep
+		pcall(function()
+			RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
+		end)
+
+		local cam = Workspace.CurrentCamera
 		if cam and prevCamType then
 			cam.CameraType = prevCamType
 		end
 		prevCamType = nil
+
+		local hum = GetHumanoid()
+		if hum and prevHumCamOffset then
+			hum.CameraOffset = prevHumCamOffset
+		end
+		prevHumCamOffset = nil
+
+		cameraApplied = false
 	end
 
 	local function StartCameraStabilize()
@@ -162,43 +175,22 @@ function M.Start(Settings, DATA)
 			StopCameraStabilize()
 			return
 		end
-		if camConn then return end
 
-		cam = Workspace.CurrentCamera
-		if not cam then return end
-		prevCamType = cam.CameraType
-		cam.CameraType = Enum.CameraType.Scriptable
+		local cam = Workspace.CurrentCamera
+		local hum = GetHumanoid()
+		if not (cam and hum) then return end
 
-		local alpha = tonumber(Settings.CameraSmoothAlpha) or 1
-		local offsetMode = Settings.CameraOffsetMode or "World"
+		if not cameraApplied then
+			prevCamType = cam.CameraType
+			prevHumCamOffset = hum.CameraOffset
+			cameraApplied = true
+		end
+
+		cam.CameraType = Enum.CameraType.Custom
+
+		-- Apply offset while mining/locked
 		local offset = Settings.CameraOffset or Vector3.new(0, 10, 18)
-		local lastCF = cam.CFrame
-
-		camConn = RunService:BindToRenderStep(
-			CAMERA_BIND_NAME,
-			Enum.RenderPriority.Camera.Value + 1,
-			function()
-				local _, r = GetCharAndRoot()
-				if not (r and r.Parent and cam) then return end
-
-				local targetPos
-				if offsetMode == "Relative" then
-					targetPos = (r.CFrame * CFrame.new(offset)).Position
-				else
-					targetPos = r.Position + offset
-				end
-
-				local lookAt = r.Position
-				local wanted = CFrame.lookAt(targetPos, lookAt)
-
-				if alpha >= 1 then
-					lastCF = wanted
-				else
-					lastCF = lastCF:Lerp(wanted, math.clamp(alpha, 0, 1))
-				end
-				cam.CFrame = lastCF
-			end
-		)
+		hum.CameraOffset = offset
 	end
 
 	-- ========= TOOL REMOTE =========
@@ -271,6 +263,7 @@ function M.Start(Settings, DATA)
 		local v = model:GetAttribute("LastHitPlayer")
 		if v == nil then v = model:GetAttribute("LastHitUserId") end
 		if v == nil then v = model:GetAttribute("LastHitBy") end
+		if v == nil then v = model:GetAttribute("LastHitByUserId") end
 		if v == nil then v = model:GetAttribute("LastHitter") end
 		if v == nil then v = model:GetAttribute("OwnerUserId") end
 		if v == nil then v = model:GetAttribute("Owner") end
@@ -312,17 +305,13 @@ function M.Start(Settings, DATA)
 	local function GetOreTypes(rockModel)
 		local set = {}
 
-		-- Scan all descendants named "Ore"
 		for _, inst in ipairs(rockModel:GetDescendants()) do
 			if inst.Name == "Ore" then
-				-- compat: StringValue "Ore"
 				if inst:IsA("StringValue") then
 					local v = inst.Value
 					if type(v) == "string" and v ~= "" then
 						set[v] = true
 					end
-
-				-- FIX: Model/Folder "Ore" with Attribute "Ore"
 				elseif inst:IsA("Model") or inst:IsA("Folder") then
 					local v = inst:GetAttribute("Ore")
 					if type(v) == "string" and v ~= "" then
@@ -332,7 +321,6 @@ function M.Start(Settings, DATA)
 			end
 		end
 
-		-- fallback: attribute directly on rockModel
 		local a = rockModel:GetAttribute("Ore")
 		if type(a) == "string" and a ~= "" then
 			set[a] = true
@@ -350,26 +338,21 @@ function M.Start(Settings, DATA)
 		return select(1, boolCount(Settings.Ores))
 	end
 
-	-- oreTypes: array from GetOreTypes()
 	local function RockMatchesOreSelection(rockModel, oreTypes)
 		local anySelected = AnyOreSelected()
 
-		-- No selection, allow-all on => pass
 		if (not anySelected) and (Settings.AllowAllOresIfNoneSelected == true) then
 			return true
 		end
 
-		-- Selection exists but strict disabled => pass
 		if anySelected and (not Settings.RequireOreMatchWhenSelected) then
 			return true
 		end
 
-		-- No selection & allow-all disabled => keep compatibility
 		if not anySelected then
 			return Settings.AllowAllOresIfNoneSelected == true
 		end
 
-		-- Empty/unknown ore list => reveal rule
 		if type(oreTypes) ~= "table" or #oreTypes == 0 then
 			if Settings.AllowUnknownOreAboveReveal then
 				local pct = GetHealthPct(rockModel)
@@ -379,7 +362,6 @@ function M.Start(Settings, DATA)
 			return false
 		end
 
-		-- OR match: any ore in list is selected => pass
 		for _, oreName in ipairs(oreTypes) do
 			if Settings.Ores[oreName] == true then
 				return true
@@ -395,8 +377,7 @@ function M.Start(Settings, DATA)
 		return hp > 0
 	end
 
-	-- Watchers: keep oreTypes cache up-to-date even if attributes change.
-	-- entry._oreConns is an array of RBXScriptConnection
+	-- Watchers to keep oreTypes cache updated
 	local function disconnectOreConns(entry)
 		if entry._oreConns then
 			for _, c in ipairs(entry._oreConns) do
@@ -444,11 +425,7 @@ function M.Start(Settings, DATA)
 			model = model,
 			zoneName = zoneName or "UnknownZone",
 			part = PickTargetPartFromRockModel(model),
-
-			-- MULTI-ORE CACHE
 			oreTypes = GetOreTypes(model),
-
-			-- watcher connections
 			_oreConns = {},
 		}
 
@@ -465,16 +442,13 @@ function M.Start(Settings, DATA)
 			bindOreWatchers(model, entry)
 		end)
 
-		-- initial bind
 		bindOreWatchers(model, entry)
 	end
 
 	local function RemoveRock(model)
 		local e = RockIndex.byModel[model]
 		if not e then return end
-
 		disconnectOreConns(e)
-
 		RockIndex.byModel[model] = nil
 		for i = #RockIndex.entries, 1, -1 do
 			if RockIndex.entries[i].model == model then
@@ -490,7 +464,6 @@ function M.Start(Settings, DATA)
 			return nil
 		end
 
-		-- Initial scan
 		for _, zone in ipairs(rocksFolder:GetChildren()) do
 			if zone:IsA("Folder") or zone:IsA("Model") then
 				for _, desc in ipairs(zone:GetDescendants()) do
@@ -501,7 +474,6 @@ function M.Start(Settings, DATA)
 			end
 		end
 
-		-- Zone added
 		rocksFolder.ChildAdded:Connect(function(child)
 			task.wait(0.1)
 			if not child then return end
@@ -514,7 +486,6 @@ function M.Start(Settings, DATA)
 			end
 		end)
 
-		-- Rock added/removed anywhere under Rocks
 		rocksFolder.DescendantAdded:Connect(function(inst)
 			if IsRockModel(inst) then
 				local zone = inst:FindFirstAncestorWhichIsA("Folder") or inst:FindFirstAncestorWhichIsA("Model")
@@ -804,7 +775,6 @@ function M.Start(Settings, DATA)
 		return targetPos, lockCF
 	end
 
-	-- Always uses tween when dist > ArriveDistance
 	local function EnsureAtPart(targetPart)
 		if not (targetPart and targetPart.Parent) then
 			CancelTween()
@@ -921,7 +891,6 @@ function M.Start(Settings, DATA)
 
 			local now = os.clock()
 
-			-- validate lockedTarget
 			local targetInvalid = (not lockedTarget) or (not lockedTarget.Parent)
 			if not targetInvalid then
 				local rockModel = lockedTarget:FindFirstAncestorOfClass("Model")
@@ -932,13 +901,9 @@ function M.Start(Settings, DATA)
 					if hp and hp <= 0 then
 						targetInvalid = true
 					end
-
-					-- ownership re-check
 					if (not targetInvalid) and (not RockIsAllowed(rockModel)) then
 						targetInvalid = true
 					end
-
-					-- ore strict re-check (MULTI-ORE)
 					if (not targetInvalid) and Settings.RequireOreMatchWhenSelected and AnyOreSelected() then
 						if not RockMatchesOreSelection(rockModel, GetOreTypes(rockModel)) then
 							targetInvalid = true
@@ -955,9 +920,8 @@ function M.Start(Settings, DATA)
 				lastGoalPos = nil
 			end
 
-			-- scan (stick)
 			if lockedTarget and now < lockedUntil then
-				-- keep current
+				-- stick
 			else
 				if (now - lastScan) >= (Settings.ScanInterval or 0.12) then
 					lastScan = now
@@ -967,7 +931,6 @@ function M.Start(Settings, DATA)
 				end
 			end
 
-			-- act
 			if lockedTarget and lockedTarget.Parent then
 				EnsureAtPart(lockedTarget)
 
@@ -993,7 +956,7 @@ function M.Start(Settings, DATA)
 		disableNoclip()
 	end)
 
-	print("[✓] Forge Core OPT Loaded! (TweenSpeed=studs/sec + Multi-Ore attribute fix)")
+	print("[✓] Forge Core OPT Loaded! (TweenSpeed=studs/sec + Multi-Ore + Camera control fix)")
 end
 
 return M
