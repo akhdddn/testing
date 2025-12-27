@@ -127,6 +127,10 @@ setDefault("LockVelocityZero", true)
 setDefault("AnchorDuringLock", false) -- only used in "Hard" mode (kept for compatibility)
 setDefault("KeepNoclipWhileLocked", true)
 
+-- Facing + smooth lock updates (NEW, minimal)
+setDefault("FaceTargetWhileMining", true)   -- make character face the rock while mining
+setDefault("LockSmoothAlpha", 0.35)        -- 0..1; lower = smoother (only affects Constraint lock target updates)
+
 -- Constraint lock tuning
 setDefault("ConstraintResponsiveness", 200)
 setDefault("ConstraintMaxForce", 1e9)
@@ -218,37 +222,34 @@ local function disableNoclip()
 	if descConn then descConn:Disconnect() end
 	noclipConn, descConn = nil, nil
 
-	for part, was in pairs(originalCollide) do
+	for part, old in pairs(originalCollide) do
 		if part and part.Parent then
-			part.CanCollide = was
+			part.CanCollide = old
 		end
 	end
 	table.clear(partsSet)
 	table.clear(originalCollide)
 end
 
-Player.CharacterAdded:Connect(function()
-	D("CHAR", "CharacterAdded -> reset")
+Player.CharacterAdded:Connect(function(c)
+	task.wait(0.25)
 	disableNoclip()
+	cacheCharacterParts(c)
 end)
 
 -- ========= CAMERA STABILIZER =========
-local camPrevType = nil
-local camPrevSubject = nil
+local camConn = nil
+local cam = Workspace.CurrentCamera
+local prevCamType = nil
 
 local function StopCameraStabilize()
-	pcall(function()
-		RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
-	end)
+	if camConn then camConn:Disconnect() end
+	camConn = nil
 
-	local cam = Workspace.CurrentCamera
-	if cam then
-		if camPrevType then cam.CameraType = camPrevType end
-		if camPrevSubject then cam.CameraSubject = camPrevSubject end
+	if cam and prevCamType then
+		cam.CameraType = prevCamType
 	end
-
-	camPrevType = nil
-	camPrevSubject = nil
+	prevCamType = nil
 end
 
 local function StartCameraStabilize()
@@ -256,41 +257,39 @@ local function StartCameraStabilize()
 		StopCameraStabilize()
 		return
 	end
+	if camConn then return end
 
-	local cam = Workspace.CurrentCamera
-	local _, r = GetCharAndRoot()
-	if not (cam and r) then return end
+	cam = Workspace.CurrentCamera
+	if not cam then return end
+	prevCamType = cam.CameraType
+	cam.CameraType = Enum.CameraType.Scriptable
 
-	pcall(function()
-		RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
-	end)
+	local alpha = tonumber(Settings.CameraSmoothAlpha) or 1
+	local offsetMode = Settings.CameraOffsetMode or "World"
+	local offset = Settings.CameraOffset or Vector3.new(0, 10, 18)
 
-	camPrevType = cam.CameraType
-	camPrevSubject = cam.CameraSubject
+	local lastCF = cam.CFrame
 
-	RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function()
-		local cam2 = Workspace.CurrentCamera
-		local _, r2 = GetCharAndRoot()
-		if not (cam2 and r2) then return end
+	camConn = RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function()
+		local _, r = GetCharAndRoot()
+		if not (r and r.Parent and cam) then return end
 
-		cam2.CameraType = Enum.CameraType.Scriptable
-
-		local alpha = math.clamp(tonumber(Settings.CameraSmoothAlpha) or 1, 0, 1)
-		local offset = Settings.CameraOffset or Vector3.new(0, 10, 18)
-
-		local desiredPos
-		if Settings.CameraOffsetMode == "Relative" then
-			desiredPos = (r2.CFrame * CFrame.new(offset)).Position
+		local targetPos
+		if offsetMode == "Relative" then
+			targetPos = (r.CFrame * CFrame.new(offset)).Position
 		else
-			desiredPos = r2.Position + offset
+			targetPos = r.Position + offset
 		end
 
-		local desired = CFrame.new(desiredPos, r2.Position)
-		if alpha >= 0.999 then
-			cam2.CFrame = desired
+		local lookAt = r.Position
+		local wanted = CFrame.lookAt(targetPos, lookAt)
+
+		if alpha >= 1 then
+			lastCF = wanted
 		else
-			cam2.CFrame = cam2.CFrame:Lerp(desired, alpha)
+			lastCF = lastCF:Lerp(wanted, math.clamp(alpha, 0, 1))
 		end
+		cam.CFrame = lastCF
 	end)
 end
 
@@ -299,238 +298,218 @@ local toolActivatedRF = nil
 local lastHit = 0
 
 local function ResolveToolActivated()
-	toolActivatedRF = nil
-	local shared = ReplicatedStorage:FindFirstChild("Shared"); if not shared then return end
-	local packages = shared:FindFirstChild("Packages"); if not packages then return end
-	local knit = packages:FindFirstChild("Knit"); if not knit then return end
-	local services = knit:FindFirstChild("Services"); if not services then return end
-	local toolService = services:FindFirstChild("ToolService"); if not toolService then return end
-	local rf = toolService:FindFirstChild("RF"); if not rf then return end
+	if toolActivatedRF and toolActivatedRF.Parent then return toolActivatedRF end
 
-	local toolActivated = rf:FindFirstChild("ToolActivated")
-	if toolActivated and toolActivated:IsA("RemoteFunction") then
-		toolActivatedRF = toolActivated
+	local ok, res = pcall(function()
+		return ReplicatedStorage:WaitForChild("Shared", 5)
+			:WaitForChild("Packages", 5)
+			:WaitForChild("Knit", 5)
+			:WaitForChild("Services", 5)
+			:WaitForChild("ToolService", 5)
+			:WaitForChild("RF", 5)
+			:WaitForChild("ToolActivated", 5)
+	end)
+	if ok and res then
+		toolActivatedRF = res
+		D("REMOTE", "ToolActivated resolved")
 	end
+	return toolActivatedRF
 end
 
 local function HitPickaxe()
+	local interval = tonumber(Settings.HitInterval) or 0.12
 	local now = os.clock()
-	if (now - lastHit) < (Settings.HitInterval or 0.12) then return end
+	if (now - lastHit) < interval then return end
 	lastHit = now
 
-	if (not toolActivatedRF) or (not toolActivatedRF.Parent) then
-		ResolveToolActivated()
-	end
-	if not toolActivatedRF then return end
+	local rf = ResolveToolActivated()
+	if not rf then return end
 
-	task.defer(function()
-		pcall(function()
-			toolActivatedRF:InvokeServer("Pickaxe")
-		end)
+	pcall(function()
+		rf:InvokeServer("Pickaxe")
 	end)
 end
 
--- ========= TARGET PART PICKER =========
-local function PickTargetPartFromRockModel(rockModel)
-	local pp = rockModel.PrimaryPart
-	if pp and pp:IsA("BasePart") then return pp end
+-- ========= ROCK INDEX (CACHE + EVENTS) =========
+local RockIndex = {
+	entries = {},
+	byModel = {},
+}
 
-	local hb = rockModel:FindFirstChild("Hitbox")
-	if hb and hb:IsA("BasePart") then return hb end
+local function IsRockModel(m)
+	if not m or not m:IsA("Model") then return false end
+	local hp = m:GetAttribute("Health")
+	local mhp = m:GetAttribute("MaxHealth")
+	return (hp ~= nil) and (mhp ~= nil)
+end
 
-	for _, inst in ipairs(rockModel:GetDescendants()) do
-		if inst:IsA("BasePart") then
-			return inst
+local function PickTargetPartFromRockModel(m)
+	if not m or not m.Parent then return nil end
+	if m.PrimaryPart then return m.PrimaryPart end
+	local hit = m:FindFirstChild("Hitbox", true)
+	if hit and hit:IsA("BasePart") then return hit end
+	for _, d in ipairs(m:GetDescendants()) do
+		if d:IsA("BasePart") then
+			return d
 		end
 	end
 	return nil
-end
-
--- ========= ORE HELPERS (UPDATED) =========
-local function GetHealthPct(rockModel)
-	local hp = rockModel:GetAttribute("Health")
-	local maxHP = rockModel:GetAttribute("MaxHealth") or 100
-	local curHP = hp or maxHP
-	return (maxHP > 0) and ((curHP / maxHP) * 100) or 100
-end
-
-local function AnyOreSelected()
-	return select(1, boolCount(Settings.Ores))
 end
 
 local function GetOreType(rockModel)
-	for _, child in ipairs(rockModel:GetChildren()) do
-		if child.Name == "Ore" then
-			local oreType = child:GetAttribute("Ore")
-			if oreType ~= nil then
-				return oreType
-			end
-		end
-	end
-	return nil
+	local oreObj = rockModel:FindFirstChild("Ore", true)
+	if not oreObj then return nil end
+	return oreObj:GetAttribute("Ore")
 end
 
---// NEW: LOGIKA OPSI B (UNKNOWN ORE TOLERANCE)
+local function GetHealthPct(rockModel)
+	local hp = rockModel:GetAttribute("Health")
+	local mhp = rockModel:GetAttribute("MaxHealth")
+	if type(hp) ~= "number" or type(mhp) ~= "number" or mhp <= 0 then
+		return nil
+	end
+	return (hp / mhp) * 100
+end
+
+local function AnyOreSelected()
+	local any = false
+	for _, v in pairs(Settings.Ores) do
+		if v == true then
+			any = true
+			break
+		end
+	end
+	return any
+end
+
 local function RockMatchesOreSelection(rockModel, cachedOreType)
 	local oresAny = AnyOreSelected()
-	local allowAllOres = (Settings.AllowAllOresIfNoneSelected == true) and (not oresAny)
-	if allowAllOres then return true end
 
-	local oreType = cachedOreType or GetOreType(rockModel)
-	
-	-- Kasus 1: Ore belum muncul (nil)
+	if (not oresAny) and (Settings.AllowAllOresIfNoneSelected == true) then
+		return true
+	end
+
+	local oreType = cachedOreType
+	if oreType == nil then
+		oreType = GetOreType(rockModel)
+	end
+
 	if oreType == nil then
 		if oresAny and Settings.AllowUnknownOreAboveReveal then
-			local pct = GetHealthPct(rockModel)
-			-- Jika HP masih di atas ambang batas (default 50%), anggap valid
-			if pct > (Settings.OreRevealThreshold or 50) then
-				return true 
+			local hpPct = GetHealthPct(rockModel)
+			local thr = tonumber(Settings.OreRevealThreshold) or 50
+			if hpPct ~= nil and hpPct > thr then
+				return true
 			end
 		end
-		-- Jika HP sudah rendah tapi ore tetap tidak muncul/unknown, skip
 		return false
 	end
 
-	-- Kasus 2: Ore sudah muncul -> Strict match
 	return Settings.Ores[oreType] == true
 end
 
--- ========= VALIDATION =========
 local function IsRockAliveEnough(rockModel)
 	local hp = rockModel:GetAttribute("Health")
-	if hp and hp <= 0 then return false end
-	-- Catatan: Validasi "Apakah Ore Sesuai" dipindahkan ke targeting
-	-- supaya kita bisa implementasi logika "Unknown Ore"
+	if type(hp) == "number" then
+		return hp > 0
+	end
 	return true
 end
 
--- ========= ROCK CACHE (EVENT-DRIVEN) =========
-local RockIndex = {
-	entries = {},    -- array of entry
-	byModel = {},    -- [Model] = entry
-	conns = {},
-}
-
-function RockIndex:_removeModel(model)
-	local e = self.byModel[model]
-	if not e then return end
-
-	self.byModel[model] = nil
-
-	if e._ancConn then e._ancConn:Disconnect() end
-	if e._childConn then e._childConn:Disconnect() end
-	if e._childRemConn then e._childRemConn:Disconnect() end
-
-	local idx = e._idx
-	local last = self.entries[#self.entries]
-	if last and idx and self.entries[idx] == e then
-		self.entries[idx] = last
-		last._idx = idx
-	end
-	self.entries[#self.entries] = nil
-end
-
-function RockIndex:_upsertModel(model, zoneName)
-	if not (model and model:IsA("Model")) then return end
-
-	-- Heuristic: rock models have HP attributes (based on your script)
-	local hp = model:GetAttribute("Health")
-	local maxHP = model:GetAttribute("MaxHealth")
-	if hp == nil and maxHP == nil then
+local function UpsertRock(rockModel, zoneName)
+	if not rockModel then return end
+	if RockIndex.byModel[rockModel] then
+		local e = RockIndex.byModel[rockModel]
+		e.zoneName = zoneName or e.zoneName
 		return
 	end
 
-	local e = self.byModel[model]
-	if not e then
-		e = {
-			model = model,
-			zoneName = zoneName,
-			oreType = GetOreType(model),
-			part = PickTargetPartFromRockModel(model),
-			_idx = #self.entries + 1,
-		}
-		self.byModel[model] = e
-		self.entries[e._idx] = e
+	local part = PickTargetPartFromRockModel(rockModel)
+	local entry = {
+		model = rockModel,
+		zoneName = zoneName,
+		part = part,
+		oreType = GetOreType(rockModel),
+	}
+	table.insert(RockIndex.entries, entry)
+	RockIndex.byModel[rockModel] = entry
 
-		e._ancConn = model.AncestryChanged:Connect(function(_, parent)
-			if parent == nil then
-				self:_removeModel(model)
-			end
-		end)
+	rockModel.ChildAdded:Connect(function(ch)
+		if ch.Name == "Ore" then
+			entry.oreType = GetOreType(rockModel)
+		end
+	end)
+	rockModel.ChildRemoved:Connect(function(ch)
+		if ch.Name == "Ore" then
+			entry.oreType = GetOreType(rockModel)
+		end
+	end)
+end
 
-		-- track ore changes cheaply
-		e._childConn = model.ChildAdded:Connect(function(ch)
-			if ch.Name == "Ore" then
-				e.oreType = GetOreType(model)
-			end
-		end)
-		e._childRemConn = model.ChildRemoved:Connect(function(ch)
-			if ch.Name == "Ore" then
-				e.oreType = GetOreType(model)
-			end
-		end)
-	else
-		e.zoneName = zoneName
-		e.oreType = GetOreType(model)
-		-- part will be refreshed lazily on selection if nil/invalid
+local function RemoveRock(rockModel)
+	local entry = RockIndex.byModel[rockModel]
+	if not entry then return end
+	RockIndex.byModel[rockModel] = nil
+	for i = #RockIndex.entries, 1, -1 do
+		if RockIndex.entries[i].model == rockModel then
+			table.remove(RockIndex.entries, i)
+			break
+		end
 	end
 end
 
-function RockIndex:_indexZone(zoneFolder)
-	-- Initial scan ONCE per zone
-	for _, inst in ipairs(zoneFolder:GetDescendants()) do
-		if inst:IsA("Model") then
-			self:_upsertModel(inst, zoneFolder.Name)
-		end
-	end
-
-	local addConn = zoneFolder.DescendantAdded:Connect(function(inst)
-		if inst:IsA("Model") then
-			self:_upsertModel(inst, zoneFolder.Name)
-		end
-	end)
-
-	local remConn = zoneFolder.DescendantRemoving:Connect(function(inst)
-		if inst:IsA("Model") then
-			self:_removeModel(inst)
-		end
-	end)
-
-	table.insert(self.conns, addConn)
-	table.insert(self.conns, remConn)
-end
-
-function RockIndex:Init()
+local function InitRockIndex()
 	local rocksFolder = Workspace:FindFirstChild("Rocks")
 	if not rocksFolder then
-		local wsConn
-		wsConn = Workspace.ChildAdded:Connect(function(ch)
-			if ch.Name == "Rocks" then
-				wsConn:Disconnect()
-				self:Init()
-			end
-		end)
-		table.insert(self.conns, wsConn)
+		warn("[!] Workspace.Rocks not found.")
 		return
+	end
+
+	local function scanZone(zoneFolder)
+		for _, d in ipairs(zoneFolder:GetDescendants()) do
+			if d:IsA("Model") and IsRockModel(d) then
+				UpsertRock(d, zoneFolder.Name)
+			end
+		end
 	end
 
 	for _, zone in ipairs(rocksFolder:GetChildren()) do
 		if zone:IsA("Folder") then
-			self:_indexZone(zone)
+			scanZone(zone)
 		end
 	end
 
 	local zConn = rocksFolder.ChildAdded:Connect(function(ch)
 		if ch:IsA("Folder") then
-			self:_indexZone(ch)
+			scanZone(ch)
 		end
 	end)
-	table.insert(self.conns, zConn)
+
+	local function onDescAdded(inst)
+		if inst:IsA("Model") and IsRockModel(inst) then
+			local zoneFolder = inst:FindFirstAncestorOfClass("Folder")
+			if zoneFolder and zoneFolder.Parent == rocksFolder then
+				UpsertRock(inst, zoneFolder.Name)
+			end
+		end
+	end
+
+	local function onDescRemoving(inst)
+		if inst:IsA("Model") then
+			RemoveRock(inst)
+		end
+	end
+
+	rocksFolder.DescendantAdded:Connect(onDescAdded)
+	rocksFolder.DescendantRemoving:Connect(onDescRemoving)
+
+	D("INDEX", "RockIndex initialized", #RockIndex.entries)
+	return zConn
 end
 
-RockIndex:Init()
+InitRockIndex()
 
--- ========= LOCK CONTROLLER (CONSTRAINT RECOMMENDED) =========
+-- ========= LOCK SYSTEM (Hard/Constraint) =========
 local lockConn = nil
 local lockRoot = nil
 local lockCFrame = nil
@@ -549,6 +528,9 @@ local rootAtt = nil
 local targetAtt = nil
 local alignPos = nil
 local alignOri = nil
+
+-- track current lock mode to avoid rebuilding every tick
+local currentLockMode = nil
 
 local function DestroyConstraintLock()
 	if alignPos then alignPos:Destroy() end
@@ -581,6 +563,7 @@ local function StopLock()
 	lockRoot, lockHum = nil, nil
 	prevPlatformStand, prevAutoRotate, prevAnchored = nil, nil, nil
 	prevWalkSpeed, prevJumpPower = nil, nil
+	currentLockMode = nil
 end
 
 local function StartConstraintLock(rootPart, cf)
@@ -689,15 +672,40 @@ local function StartHardLock(rootPart, cf)
 	end)
 end
 
+local function UpdateConstraintTarget(cf)
+	if not (lockTargetPart and lockTargetPart.Parent) then return end
+	local alpha = tonumber(Settings.LockSmoothAlpha) or 0.35
+	if alpha >= 1 then
+		lockTargetPart.CFrame = cf
+	elseif alpha <= 0 then
+		lockTargetPart.CFrame = cf
+	else
+		lockTargetPart.CFrame = lockTargetPart.CFrame:Lerp(cf, alpha)
+	end
+end
+
 local function StartLock(rootPart, cf)
 	if not Settings.LockToTarget then
 		StopLock()
 		return
 	end
 
-	StopLock()
+	local desiredMode = (Settings.LockMode == "Hard") and "Hard" or "Constraint"
 
-	if Settings.LockMode == "Hard" then
+	-- If we are already locked on the same root + mode, just update target (no rebuild)
+	if lockRoot == rootPart and lockRoot and lockRoot.Parent and currentLockMode == desiredMode then
+		lockCFrame = cf
+		if desiredMode == "Constraint" then
+			UpdateConstraintTarget(cf)
+		end
+		return
+	end
+
+	-- otherwise, rebuild once
+	StopLock()
+	currentLockMode = desiredMode
+
+	if desiredMode == "Hard" then
 		StartHardLock(rootPart, cf)
 	else
 		StartConstraintLock(rootPart, cf)
@@ -717,7 +725,7 @@ local function GetBestTargetPart()
 
 	local allowAllZones = (Settings.AllowAllZonesIfNoneSelected == true) and (not zonesAny)
 	local allowAllRocks = (Settings.AllowAllRocksIfNoneSelected == true) and (not rocksAny)
-	
+
 	-- Note: Ore logic is now handled inside RockMatchesOreSelection
 
 	local myPos = r.Position
@@ -768,16 +776,32 @@ local function CancelTween()
 	activeTween = nil
 end
 
+local function MakeMiningLockCF(targetPart)
+	local rockPos = targetPart.Position
+	local yOff = tonumber(Settings.YOffset) or 0
+	local targetPos = rockPos + Vector3.new(0, yOff, 0)
+
+	-- move CF stays no-rotation; lock CF may face target for mining
+	local lockCF = CFrame.new(targetPos)
+	if Settings.FaceTargetWhileMining then
+		-- keep look direction flat (no up/down tilt)
+		local lookPos = Vector3.new(rockPos.X, targetPos.Y, rockPos.Z)
+		if (lookPos - targetPos).Magnitude > 0.05 then
+			lockCF = CFrame.lookAt(targetPos, lookPos)
+		end
+	end
+
+	return targetPos, lockCF
+end
+
 local function EnsureAtPart(targetPart)
 	if not (targetPart and targetPart.Parent) then return false end
 	local _, r = GetCharAndRoot()
 	if not (r and r.Parent) then return false end
 
-	-- compute desired position (center XZ, Y offset only)
-	local rockPos = targetPart.Position
-	local yOff = tonumber(Settings.YOffset) or 0
-	local targetPos = rockPos + Vector3.new(0, yOff, 0)
-	local desiredCF = CFrame.new(targetPos)
+	-- compute desired position (center XZ, Y offset only) + lock CFrame (optionally faces target)
+	local targetPos, lockCF = MakeMiningLockCF(targetPart)
+	local desiredCF = CFrame.new(targetPos) -- keep tween no-rotation (anti jitter)
 
 	local dist = (r.Position - targetPos).Magnitude
 	local arriveDist = tonumber(Settings.ArriveDistance) or 2.25
@@ -786,7 +810,7 @@ local function EnsureAtPart(targetPart)
 	-- already close enough: just lock/cam (no tween)
 	if dist <= arriveDist then
 		CancelTween()
-		StartLock(r, desiredCF)
+		StartLock(r, lockCF)
 		StartCameraStabilize()
 		if Settings.KeepNoclipWhileLocked then
 			enableNoclip()
@@ -799,7 +823,7 @@ local function EnsureAtPart(targetPart)
 	-- if we are locked but drifted a bit: retween only if far enough
 	if dist < retweenDist and currentTargetPart == targetPart then
 		-- minor drift: constraint lock usually fixes it; no tween spam
-		StartLock(r, desiredCF)
+		StartLock(r, lockCF)
 		StartCameraStabilize()
 		if Settings.KeepNoclipWhileLocked then enableNoclip() end
 		return true
@@ -825,7 +849,7 @@ local function EnsureAtPart(targetPart)
 	activeTween = nil
 
 	-- lock at destination
-	StartLock(r, desiredCF)
+	StartLock(r, lockCF)
 	StartCameraStabilize()
 
 	-- keep noclip optional during lock
