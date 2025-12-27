@@ -1,4 +1,4 @@
---[[ 
+--[[  
     ===== THE FORGE ULTIMATE LOADER =====
     Author: akhdddn
     Features: 
@@ -6,6 +6,7 @@
     - Anti-Cache (Always Latest Version)
     - Robust Error Handling
     - Notification System
+    - (Updated) Load setting.lua first
 ]]
 
 local StarterGui = game:GetService("StarterGui")
@@ -13,8 +14,9 @@ local HttpService = game:GetService("HttpService")
 
 -- // KONFIGURASI URL (Bisa pakai link blob biasa, script akan otomatis convert)
 local SCRIPT_CONFIG = {
-    Core = "https://github.com/akhdddn/testing/blob/main/core.lua",
-    GUI  = "https://github.com/akhdddn/testing/blob/main/gui.lua"
+    Setting = "https://github.com/akhdddn/testing/blob/main/setting.lua", -- NEW
+    Core    = "https://github.com/akhdddn/testing/blob/main/core.lua",
+    GUI     = "https://github.com/akhdddn/testing/blob/main/gui.lua"
 }
 
 -- // 1. SYSTEM UTILS
@@ -24,7 +26,7 @@ local function SendNotif(title, text, duration)
             Title = title;
             Text = text;
             Duration = duration or 5;
-            Icon = "rbxassetid://12345678" -- Ganti icon jika mau
+            Icon = "rbxassetid://12345678"
         })
     end)
 end
@@ -35,15 +37,18 @@ local function GetRawURL(url)
         url = url:gsub("github.com", "raw.githubusercontent.com")
         url = url:gsub("/blob/", "/")
     end
+
     -- Anti-Cache: Tambahkan timestamp agar executor tidak mengambil file lama
-    return url .. "?t=" .. tostring(os.time())
+    -- Kalau url sudah punya query, pakai '&' bukan '?'
+    local sep = url:find("%?") and "&" or "?"
+    return url .. sep .. "t=" .. tostring(os.time())
 end
 
 -- // 2. EXECUTION HANDLER
 local function LoadScript(name, url)
     local cleanUrl = GetRawURL(url)
     print("Downloading " .. name .. " from: " .. cleanUrl)
-    
+
     -- Tahap 1: Download
     local success, response = pcall(function()
         return game:HttpGet(cleanUrl)
@@ -83,25 +88,35 @@ _G.ForgeLoaderRunning = true
 
 task.spawn(function()
     SendNotif("The Forge", "Memulai Loader...", 2)
-    
-    -- Load Core Dulu (PENTING)
+
+    -- 1) Load Setting dulu (PENTING)
+    local settingLoaded = LoadScript("Setting Script", SCRIPT_CONFIG.Setting)
+    if not settingLoaded then
+        SendNotif("Failed", "Setting gagal dimuat. Core & GUI dibatalkan.", 5)
+        _G.ForgeLoaderRunning = false
+        return
+    end
+
+    -- beri jeda agar _G.Settings/_G.DATA siap (kalau setting menginisialisasi globals)
+    task.wait(0.2)
+
+    -- 2) Load Core
     local coreLoaded = LoadScript("Core Script", SCRIPT_CONFIG.Core)
-    
-    if coreLoaded then
-        -- Beri jeda sedikit agar Core menginisialisasi _G.DATA
-        task.wait(0.5) 
-        
-        -- Load GUI
-        local guiLoaded = LoadScript("GUI Script", SCRIPT_CONFIG.GUI)
-        
-        if guiLoaded then
-            SendNotif("Success", "The Forge Berhasil Dimuat!", 5)
-            print("[Loader] All scripts loaded successfully.")
-        else
-            _G.ForgeLoaderRunning = false -- Reset jika GUI gagal
-        end
-    else
+    if not coreLoaded then
         SendNotif("Failed", "Core gagal dimuat. GUI dibatalkan.", 5)
         _G.ForgeLoaderRunning = false
+        return
+    end
+
+    -- Beri jeda sedikit agar Core menginisialisasi state
+    task.wait(0.5)
+
+    -- 3) Load GUI
+    local guiLoaded = LoadScript("GUI Script", SCRIPT_CONFIG.GUI)
+    if guiLoaded then
+        SendNotif("Success", "The Forge Berhasil Dimuat!", 5)
+        print("[Loader] All scripts loaded successfully.")
+    else
+        _G.ForgeLoaderRunning = false -- Reset jika GUI gagal
     end
 end)
