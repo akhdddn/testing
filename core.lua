@@ -1,6 +1,7 @@
 -- ReplicatedStorage/ForgeCore (ModuleScript)
--- FULL VERSION (TweenSpeed = studs/sec while tweening) + ORE FILTER FIX:
--- Ore is a Model/Folder named "Ore" inside RockModel, and that Ore node has Attribute "Ore" = ore name.
+-- FULL: TweenSpeed = studs/sec (always tween when moving) + MULTI-ORE FIX
+-- Ore nodes can be multiple. Each Ore node is a Model/Folder named "Ore" with Attribute "Ore" = ore name (string).
+-- Also supports StringValue named "Ore" (compat).
 
 local M = {}
 
@@ -143,7 +144,7 @@ function M.Start(Settings, DATA)
 	local prevCamType = nil
 
 	local function StopCameraStabilize()
-		-- (kept as-is for compatibility)
+		-- kept for compatibility
 		if camConn then
 			pcall(function()
 				camConn:Disconnect()
@@ -235,7 +236,7 @@ function M.Start(Settings, DATA)
 		end)
 	end
 
-	-- ========= ROCK INDEX (CACHE + EVENTS) =========
+	-- ========= ROCK INDEX =========
 	local RockIndex = { entries = {}, byModel = {} }
 
 	local function IsRockModel(m)
@@ -306,67 +307,70 @@ function M.Start(Settings, DATA)
 		return false
 	end
 
-	-- ========= ORE TYPE FIX =========
-	-- Game structure:
-	-- RockModel
-	--  └─ Ore (Model/Folder)
-	--      └─ Attribute: Ore = "Crimsonite"
-	--
-	-- This function returns the ore name string or nil if unknown.
-	local function GetOreType(rockModel)
-		-- 1) Find descendant named "Ore"
-		local oreNode = rockModel:FindFirstChild("Ore", true)
+	-- ========= MULTI-ORE READER =========
+	-- Returns array list: {"Iron","Crimsonite",...} (may be empty)
+	local function GetOreTypes(rockModel)
+		local set = {}
 
-		-- Compatibility: StringValue named "Ore"
-		if oreNode and oreNode:IsA("StringValue") then
-			local v = oreNode.Value
-			if type(v) == "string" and v ~= "" then
-				return v
+		-- Scan all descendants named "Ore"
+		for _, inst in ipairs(rockModel:GetDescendants()) do
+			if inst.Name == "Ore" then
+				-- compat: StringValue "Ore"
+				if inst:IsA("StringValue") then
+					local v = inst.Value
+					if type(v) == "string" and v ~= "" then
+						set[v] = true
+					end
+
+				-- FIX: Model/Folder "Ore" with Attribute "Ore"
+				elseif inst:IsA("Model") or inst:IsA("Folder") then
+					local v = inst:GetAttribute("Ore")
+					if type(v) == "string" and v ~= "" then
+						set[v] = true
+					end
+				end
 			end
 		end
 
-		-- FIX: Model/Folder named "Ore" with Attribute "Ore"
-		if oreNode and (oreNode:IsA("Model") or oreNode:IsA("Folder")) then
-			local v = oreNode:GetAttribute("Ore")
-			if type(v) == "string" and v ~= "" then
-				return v
-			end
-		end
-
-		-- Fallback: attribute "Ore" directly on rockModel
+		-- fallback: attribute directly on rockModel
 		local a = rockModel:GetAttribute("Ore")
 		if type(a) == "string" and a ~= "" then
-			return a
+			set[a] = true
 		end
 
-		return nil
+		local list = {}
+		for name in pairs(set) do
+			table.insert(list, name)
+		end
+		table.sort(list)
+		return list
 	end
 
 	local function AnyOreSelected()
-		local any = select(1, boolCount(Settings.Ores))
-		return any
+		return select(1, boolCount(Settings.Ores))
 	end
 
-	local function RockMatchesOreSelection(rockModel, oreType)
+	-- oreTypes: array from GetOreTypes()
+	local function RockMatchesOreSelection(rockModel, oreTypes)
 		local anySelected = AnyOreSelected()
 
-		-- If user didn't pick ores and allow-all is enabled => allow everything
+		-- No selection, allow-all on => pass
 		if (not anySelected) and (Settings.AllowAllOresIfNoneSelected == true) then
 			return true
 		end
 
-		-- If user selected ores but strict flag off => allow everything
+		-- Selection exists but strict disabled => pass
 		if anySelected and (not Settings.RequireOreMatchWhenSelected) then
 			return true
 		end
 
-		-- If no selection and allow-all disabled => keep compatibility
+		-- No selection & allow-all disabled => keep compatibility
 		if not anySelected then
 			return Settings.AllowAllOresIfNoneSelected == true
 		end
 
-		-- Unknown ore: allow when HP% > threshold if configured
-		if oreType == nil then
+		-- Empty/unknown ore list => reveal rule
+		if type(oreTypes) ~= "table" or #oreTypes == 0 then
 			if Settings.AllowUnknownOreAboveReveal then
 				local pct = GetHealthPct(rockModel)
 				local thr = tonumber(Settings.OreRevealThreshold) or 50
@@ -375,8 +379,14 @@ function M.Start(Settings, DATA)
 			return false
 		end
 
-		-- Known ore => must be selected
-		return Settings.Ores[oreType] == true
+		-- OR match: any ore in list is selected => pass
+		for _, oreName in ipairs(oreTypes) do
+			if Settings.Ores[oreName] == true then
+				return true
+			end
+		end
+
+		return false
 	end
 
 	local function IsRockAliveEnough(model)
@@ -385,29 +395,38 @@ function M.Start(Settings, DATA)
 		return hp > 0
 	end
 
-	-- Track ore watchers per entry so cache stays correct
+	-- Watchers: keep oreTypes cache up-to-date even if attributes change.
+	-- entry._oreConns is an array of RBXScriptConnection
+	local function disconnectOreConns(entry)
+		if entry._oreConns then
+			for _, c in ipairs(entry._oreConns) do
+				if c and c.Connected then c:Disconnect() end
+			end
+		end
+		entry._oreConns = {}
+	end
+
 	local function bindOreWatchers(rockModel, entry)
-		-- Disconnect existing ore watcher if we rebind
-		if entry._oreAttrConn then
-			entry._oreAttrConn:Disconnect()
-			entry._oreAttrConn = nil
-		end
-		if entry._oreNodeAttrConn then
-			entry._oreNodeAttrConn:Disconnect()
-			entry._oreNodeAttrConn = nil
-		end
+		disconnectOreConns(entry)
 
-		-- If rockModel itself has Ore attribute (fallback), watch it
-		entry._oreAttrConn = rockModel:GetAttributeChangedSignal("Ore"):Connect(function()
-			entry.oreType = GetOreType(rockModel)
-		end)
+		-- fallback attribute on rockModel
+		table.insert(entry._oreConns, rockModel:GetAttributeChangedSignal("Ore"):Connect(function()
+			entry.oreTypes = GetOreTypes(rockModel)
+		end))
 
-		-- If ore node exists as Model/Folder, watch its Ore attribute
-		local oreNode = rockModel:FindFirstChild("Ore", true)
-		if oreNode and (oreNode:IsA("Model") or oreNode:IsA("Folder")) then
-			entry._oreNodeAttrConn = oreNode:GetAttributeChangedSignal("Ore"):Connect(function()
-				entry.oreType = GetOreType(rockModel)
-			end)
+		-- bind all current ore nodes
+		for _, inst in ipairs(rockModel:GetDescendants()) do
+			if inst.Name == "Ore" then
+				if inst:IsA("Model") or inst:IsA("Folder") then
+					table.insert(entry._oreConns, inst:GetAttributeChangedSignal("Ore"):Connect(function()
+						entry.oreTypes = GetOreTypes(rockModel)
+					end))
+				elseif inst:IsA("StringValue") then
+					table.insert(entry._oreConns, inst.Changed:Connect(function()
+						entry.oreTypes = GetOreTypes(rockModel)
+					end))
+				end
+			end
 		end
 	end
 
@@ -416,8 +435,7 @@ function M.Start(Settings, DATA)
 			local e = RockIndex.byModel[model]
 			e.zoneName = zoneName or e.zoneName
 			e.part = e.part and e.part.Parent and e.part or PickTargetPartFromRockModel(model)
-			e.oreType = GetOreType(model)
-			-- rebind ore watchers (in case Ore node appeared later)
+			e.oreTypes = GetOreTypes(model)
 			bindOreWatchers(model, e)
 			return
 		end
@@ -426,35 +444,28 @@ function M.Start(Settings, DATA)
 			model = model,
 			zoneName = zoneName or "UnknownZone",
 			part = PickTargetPartFromRockModel(model),
-			oreType = GetOreType(model),
 
-			_oreAttrConn = nil,
-			_oreNodeAttrConn = nil,
+			-- MULTI-ORE CACHE
+			oreTypes = GetOreTypes(model),
+
+			-- watcher connections
+			_oreConns = {},
 		}
+
 		RockIndex.byModel[model] = entry
 		table.insert(RockIndex.entries, entry)
 
-		-- Keep oreType cached if children change (Ore node might appear later)
-		model.ChildAdded:Connect(function(inst)
-			-- if an Ore node appears or changes, update and rebind watchers
-			if inst and inst.Name == "Ore" then
-				entry.oreType = GetOreType(model)
-				bindOreWatchers(model, entry)
-			else
-				-- still update cache (cheap) because ore might be deeper
-				entry.oreType = GetOreType(model)
-			end
+		-- children changes can add/remove ore nodes -> refresh & rebind
+		model.ChildAdded:Connect(function()
+			entry.oreTypes = GetOreTypes(model)
+			bindOreWatchers(model, entry)
 		end)
-		model.ChildRemoved:Connect(function(inst)
-			if inst and inst.Name == "Ore" then
-				entry.oreType = GetOreType(model)
-				bindOreWatchers(model, entry)
-			else
-				entry.oreType = GetOreType(model)
-			end
+		model.ChildRemoved:Connect(function()
+			entry.oreTypes = GetOreTypes(model)
+			bindOreWatchers(model, entry)
 		end)
 
-		-- Watch attribute changes (rockModel + oreNode)
+		-- initial bind
 		bindOreWatchers(model, entry)
 	end
 
@@ -462,9 +473,7 @@ function M.Start(Settings, DATA)
 		local e = RockIndex.byModel[model]
 		if not e then return end
 
-		-- disconnect watchers to avoid lingering connections
-		if e._oreAttrConn then e._oreAttrConn:Disconnect() end
-		if e._oreNodeAttrConn then e._oreNodeAttrConn:Disconnect() end
+		disconnectOreConns(e)
 
 		RockIndex.byModel[model] = nil
 		for i = #RockIndex.entries, 1, -1 do
@@ -741,7 +750,7 @@ function M.Start(Settings, DATA)
 				if allowAllZones or Settings.Zones[e.zoneName] == true then
 					if allowAllRocks or Settings.Rocks[model.Name] == true then
 						if RockIsAllowed(model) then
-							if RockMatchesOreSelection(model, e.oreType) then
+							if RockMatchesOreSelection(model, e.oreTypes) then
 								if IsRockAliveEnough(model) then
 									local part = e.part
 									if not (part and part.Parent) then
@@ -912,6 +921,7 @@ function M.Start(Settings, DATA)
 
 			local now = os.clock()
 
+			-- validate lockedTarget
 			local targetInvalid = (not lockedTarget) or (not lockedTarget.Parent)
 			if not targetInvalid then
 				local rockModel = lockedTarget:FindFirstAncestorOfClass("Model")
@@ -923,13 +933,14 @@ function M.Start(Settings, DATA)
 						targetInvalid = true
 					end
 
+					-- ownership re-check
 					if (not targetInvalid) and (not RockIsAllowed(rockModel)) then
 						targetInvalid = true
 					end
 
+					-- ore strict re-check (MULTI-ORE)
 					if (not targetInvalid) and Settings.RequireOreMatchWhenSelected and AnyOreSelected() then
-						-- Use FIXED ore reader here too (Ore model attribute)
-						if not RockMatchesOreSelection(rockModel, GetOreType(rockModel)) then
+						if not RockMatchesOreSelection(rockModel, GetOreTypes(rockModel)) then
 							targetInvalid = true
 						end
 					end
@@ -944,8 +955,9 @@ function M.Start(Settings, DATA)
 				lastGoalPos = nil
 			end
 
+			-- scan (stick)
 			if lockedTarget and now < lockedUntil then
-				-- stick
+				-- keep current
 			else
 				if (now - lastScan) >= (Settings.ScanInterval or 0.12) then
 					lastScan = now
@@ -955,6 +967,7 @@ function M.Start(Settings, DATA)
 				end
 			end
 
+			-- act
 			if lockedTarget and lockedTarget.Parent then
 				EnsureAtPart(lockedTarget)
 
@@ -980,7 +993,7 @@ function M.Start(Settings, DATA)
 		disableNoclip()
 	end)
 
-	print("[✓] Forge Core OPT Loaded! (TweenSpeed=studs/sec + Ore model attribute fix)")
+	print("[✓] Forge Core OPT Loaded! (TweenSpeed=studs/sec + Multi-Ore attribute fix)")
 end
 
 return M
