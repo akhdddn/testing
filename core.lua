@@ -1,12 +1,9 @@
 -- ReplicatedStorage/ForgeCore (ModuleScript)
--- OPT+ : non-b... (original header preserved)
+-- OPT+ : non-b...e konsisten)
 
 local M = {}
 
-function M.Start(Settings, DATA)
-	-- ============================
-	-- Services
-	-- ============================
+function M.Start(Settings, DAT
 	local Players = game:GetService("Players")
 	local RunService = game:GetService("RunService")
 	local TweenService = game:GetService("TweenService")
@@ -15,27 +12,20 @@ function M.Start(Settings, DATA)
 
 	local LP = Players.LocalPlayer
 
-	-- ============================
-	-- Debug helper
-	-- ============================
 	local function D(tag, ...)
 		if Settings and Settings.Debug then
 			print(("[ForgeCore:%s]"):format(tag), ...)
 		end
 	end
 
-	-- ============================
 	-- Anti double load
-	-- ============================
 	if _G.__ForgeCoreLoaded_OPT then
 		warn("[!] ForgeCore OPT+ already loaded, aborting duplicate load.")
 		return
 	end
 	_G.__ForgeCoreLoaded_OPT = true
 
-	-- ============================
 	-- Character helpers
-	-- ============================
 	local function GetChar()
 		local c = LP.Character
 		if c and c.Parent then
@@ -64,9 +54,7 @@ function M.Start(Settings, DATA)
 		return c, nil
 	end
 
-	-- ============================
 	-- Noclip system (cached)
-	-- ============================
 	local noclipOn = false
 	local noclipConn = nil
 	local charDescConn = nil
@@ -164,9 +152,7 @@ function M.Start(Settings, DATA)
 		cacheCharacterParts(newChar)
 	end)
 
-	-- ============================
 	-- Ultra-light camera stabilize (optional)
-	-- ============================
 	local camRunning = false
 	local camOutCF = nil
 	local CAMERA_BIND_NAME = "ForgeCamStabilize"
@@ -215,107 +201,7 @@ function M.Start(Settings, DATA)
 		camOutCF = nil
 	end
 
-	-- ============================
-	-- Body Aim (Pitch Up/Down) while mining (no yaw changes)
-	-- ============================
-	local aimConn = nil
-	local aimChar = nil
-	local aimNeck = nil
-	local aimWaist = nil
-	local aimNeckC0 = nil
-	local aimWaistC0 = nil
-	local aimPitch = 0
-
-	local function FindMotor6DByName(char: Model, motorName: string)
-		for _, d in ipairs(char:GetDescendants()) do
-			if d:IsA("Motor6D") and d.Name == motorName then
-				return d
-			end
-		end
-		return nil
-	end
-
-	local function ResetBodyAim()
-		if aimNeck and aimNeck.Parent and aimNeckC0 then
-			aimNeck.C0 = aimNeckC0
-		end
-		if aimWaist and aimWaist.Parent and aimWaistC0 then
-			aimWaist.C0 = aimWaistC0
-		end
-		aimChar, aimNeck, aimWaist = nil, nil, nil
-		aimNeckC0, aimWaistC0 = nil, nil
-		aimPitch = 0
-	end
-
-	local function StopBodyAim()
-		if aimConn then
-			aimConn:Disconnect()
-		end
-		aimConn = nil
-		ResetBodyAim()
-	end
-
-	local function ComputePitchToTarget(rootPart: BasePart, targetPos: Vector3)
-		local dir = (targetPos - rootPart.Position)
-		if dir.Magnitude < 1e-3 then
-			return 0
-		end
-		local localDir = rootPart.CFrame:VectorToObjectSpace(dir.Unit)
-
-		-- localDir.Z biasanya negatif jika target di depan root
-		local forward = math.max(1e-3, -localDir.Z)
-		local pitch = math.atan2(localDir.Y, forward)
-		return pitch
-	end
-
-	local function StartBodyAim(getRootAndTargetFn)
-		-- Default ON kecuali explicitly dimatikan
-		if Settings.BodyAimWhileMining == false then
-			return
-		end
-
-		StopBodyAim()
-
-		aimConn = RunService.RenderStepped:Connect(function(dt)
-			local char, root, targetPart = getRootAndTargetFn()
-			if not (char and root and targetPart and targetPart.Parent) then
-				return
-			end
-
-			-- (Re)bind motors jika character berubah
-			if aimChar ~= char then
-				ResetBodyAim()
-				aimChar = char
-				aimNeck = FindMotor6DByName(char, "Neck")
-				aimWaist = FindMotor6DByName(char, "Waist")
-				if aimNeck then aimNeckC0 = aimNeck.C0 end
-				if aimWaist then aimWaistC0 = aimWaist.C0 end
-			end
-
-			local maxDeg = tonumber(Settings.BodyAimMaxPitchDeg) or 35
-			local maxPitch = math.rad(maxDeg)
-			local smoothTime = tonumber(Settings.BodyAimSmoothTime) or 0.08
-			local alpha = 1 - math.exp(-dt / math.max(1e-4, smoothTime))
-
-			local desired = ComputePitchToTarget(root, targetPart.Position)
-			if desired > maxPitch then desired = maxPitch end
-			if desired < -maxPitch then desired = -maxPitch end
-
-			aimPitch = aimPitch + (desired - aimPitch) * alpha
-
-			-- Apply pitch split: mostly neck, sedikit waist (lebih natural)
-			if aimNeck and aimNeck.Parent and aimNeckC0 then
-				aimNeck.C0 = aimNeckC0 * CFrame.Angles(aimPitch * 0.75, 0, 0)
-			end
-			if aimWaist and aimWaist.Parent and aimWaistC0 then
-				aimWaist.C0 = aimWaistC0 * CFrame.Angles(aimPitch * 0.25, 0, 0)
-			end
-		end)
-	end
-
-	-- ============================
 	-- Tool remote resolve + throttled hit
-	-- ============================
 	local toolRF = nil
 	local lastResolve = 0
 	local RESOLVE_COOLDOWN = 2.0
@@ -372,9 +258,7 @@ function M.Start(Settings, DATA)
 		end)
 	end
 
-	-- ============================
 	-- Rock Index
-	-- ============================
 	local RockIndex = {
 		entries = {},
 		byModel = {},
@@ -608,7 +492,6 @@ function M.Start(Settings, DATA)
 	local function StopLock()
 		if lockConn then lockConn:Disconnect() end
 		lockConn = nil
-		StopBodyAim()
 
 		CleanupConstraintStuff()
 
@@ -839,7 +722,6 @@ function M.Start(Settings, DATA)
 
 		local zonesCount, zonesAny = boolCount(Settings.Zones)
 		local rocksCount, rocksAny = boolCount(Settings.Rocks)
-		local anyOreSelected = select(1, boolCount(Settings.Ores))
 
 		local allowAllZones = (Settings.AllowAllZonesIfNoneSelected == true) and (not zonesAny)
 		local allowAllRocks = (Settings.AllowAllRocksIfNoneSelected == true) and (not rocksAny)
@@ -905,7 +787,7 @@ function M.Start(Settings, DATA)
 
 		local lockCF = CFrame.new(targetPos)
 		if Settings.FaceTargetWhileMining then
-			-- yaw-only face (kept as original)
+			-- yaw-only face
 			local lookPos = Vector3.new(rockPos.X, targetPos.Y, rockPos.Z)
 			if (lookPos - targetPos).Magnitude > 0.05 then
 				lockCF = CFrame.lookAt(targetPos, lookPos)
@@ -915,15 +797,9 @@ function M.Start(Settings, DATA)
 		return targetPos, lockCF
 	end
 
-	local function ApplyLockedState(rootPart, lockCF, targetPart)
+	local function ApplyLockedState(rootPart, lockCF)
 		StartLock(rootPart, lockCF)
 		StartCameraStabilize()
-
-		-- Body aim (pitch) ONLY while locked/mining
-		StartBodyAim(function()
-			local c, r = GetCharAndRoot()
-			return c, r, targetPart
-		end)
 
 		if Settings.KeepNoclipWhileLocked then
 			enableNoclip()
@@ -955,10 +831,10 @@ function M.Start(Settings, DATA)
 		local dist = (r.Position - targetPos).Magnitude
 		local arriveDist = tonumber(Settings.ArriveDistance) or 2.25
 
-		-- ARRIVED: lock + face target (via lockCF)
+		-- ARRIVED
 		if dist <= arriveDist then
 			CancelTween()
-			ApplyLockedState(r, lockCF, targetPart)
+			ApplyLockedState(r, lockCF)
 			return true
 		end
 
@@ -1008,7 +884,7 @@ function M.Start(Settings, DATA)
 			local _, rr = GetCharAndRoot()
 			if not (rr and rr.Parent and cf) then return end
 
-			ApplyLockedState(rr, cf, tp)
+			ApplyLockedState(rr, cf)
 		end)
 
 		activeTween:Play()
