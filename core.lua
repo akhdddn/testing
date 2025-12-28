@@ -1,12 +1,11 @@
 -- ReplicatedStorage/ForgeCore (ModuleScript)
 -- OPT+ : non-blocking tween, ore cache-safe validation, squared distance, debounced ore refresh,
---        throttled remote resolve, cleanup-on-transition (tanpa ubah logic)
+--        throttled remote resolve, cleanup-on-transition
 --
--- CAMERA REVISI (ULTRA LIGHT):
--- - Tidak pakai Humanoid.CameraOffset
--- - Tidak ubah CameraType/CameraSubject
--- - Hanya smoothing ringan CurrentCamera.CFrame setelah CameraScript
--- - Kamera tetap “default roblox”, tapi guncangan high-frequency berkurang
+-- FULL REVISION INCLUDED:
+-- ✅ Kamera ultra-ringan (default Roblox) + anti-shake ringan (post CameraScript)
+-- ✅ Player benar-benar menghadap target (tween ke lockCF)
+-- ✅ HitPickaxe hanya dipanggil saat sudah ARRIVED/LOCKED (biar damage konsisten)
 
 local M = {}
 
@@ -19,7 +18,7 @@ function M.Start(Settings, DATA)
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 	local Player = Players.LocalPlayer
-	local CAMERA_BIND_NAME = "Forge_CameraFollow_Optim" -- compatibility (nama sama biar tidak bentrok)
+	local CAMERA_BIND_NAME = "Forge_CameraFollow_Optim"
 
 	-- ========= DEBUG =========
 	_G.ForgeDebug = (_G.ForgeDebug ~= nil) and _G.ForgeDebug or false
@@ -31,13 +30,6 @@ function M.Start(Settings, DATA)
 		else
 			warn(pfx .. msg)
 		end
-	end
-
-	local function clamp01(x)
-		if type(x) ~= "number" then return 0 end
-		if x < 0 then return 0 end
-		if x > 1 then return 1 end
-		return x
 	end
 
 	local function boolCount(map)
@@ -150,12 +142,7 @@ function M.Start(Settings, DATA)
 		cacheCharacterParts(c)
 	end)
 
-	-- ========= CAMERA (ULTRA LIGHT NO-SHAKE, DEFAULT ROBLOX) =========
-	-- Catatan:
-	-- - Tidak ubah CameraType/Subject
-	-- - Tidak sentuh Humanoid.CameraOffset
-	-- - Post-process smoothing CFrame setelah CameraScript (Camera priority + 1)
-	-- - Sangat ringan: 1x Lerp per frame + snap saat teleport/jauh
+	-- ========= CAMERA (ULTRA LIGHT, DEFAULT ROBLOX, ANTI SHAKE) =========
 	local camRunning = false
 	local camOutCF = nil
 
@@ -166,20 +153,11 @@ function M.Start(Settings, DATA)
 	end
 
 	local function camAlpha(dt, smoothTime)
-		-- exponential smoothing (stabil & ringan)
 		if smoothTime <= 0 then return 1 end
 		return 1 - math.exp(-dt / smoothTime)
 	end
 
 	local function StopCameraStabilize()
-		if not camRunning then
-			pcall(function()
-				RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
-			end)
-			camOutCF = nil
-			return
-		end
-
 		camRunning = false
 		pcall(function()
 			RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
@@ -188,13 +166,11 @@ function M.Start(Settings, DATA)
 	end
 
 	local function StartCameraStabilize()
-		-- Tetap hormati flag Settings.CameraStabilize (biar kompatibel sama UI/script kamu)
-		-- Kalau false: matikan smoothing kamera
+		-- tetap hormati flag Settings.CameraStabilize
 		if not Settings.CameraStabilize then
 			StopCameraStabilize()
 			return
 		end
-
 		if camRunning then return end
 		camRunning = true
 
@@ -207,15 +183,12 @@ function M.Start(Settings, DATA)
 
 		RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function(dt)
 			if not camRunning then return end
-
 			local camera = Workspace.CurrentCamera
 			if not camera then return end
 
-			-- tuning paling ringan (bisa kamu ubah dari Settings kalau mau)
-			local smoothTime = tonumber(Settings.CameraSmoothTime) or 0.07  -- kecil = lebih default
-			local snapDist = tonumber(Settings.CameraSnapDistance) or 8     -- teleport/jauh => snap
+			local smoothTime = tonumber(Settings.CameraSmoothTime) or 0.07
+			local snapDist = tonumber(Settings.CameraSnapDistance) or 8
 
-			-- clamp dt supaya tidak jitter kalau fps drop/spike
 			dt = camClamp(dt, 1/240, 1/30)
 
 			local target = camera.CFrame
@@ -870,6 +843,7 @@ function M.Start(Settings, DATA)
 		local dist = (r.Position - targetPos).Magnitude
 		local arriveDist = tonumber(Settings.ArriveDistance) or 2.25
 
+		-- ARRIVED: lock + face target (via lockCF)
 		if dist <= arriveDist then
 			CancelTween()
 			currentTargetPart = targetPart
@@ -907,10 +881,11 @@ function M.Start(Settings, DATA)
 		pendingLockCF = lockCF
 		pendingLockTargetPart = targetPart
 
+		-- IMPORTANT PATCH: tween to lockCF (not position only)
 		activeTween = TweenService:Create(
 			r,
 			TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
-			{ CFrame = CFrame.new(targetPos) }
+			{ CFrame = lockCF }
 		)
 
 		activeTween.Completed:Connect(function()
@@ -1025,13 +1000,16 @@ function M.Start(Settings, DATA)
 			end
 
 			if lockedTarget and lockedTarget.Parent then
-				EnsureAtPart(lockedTarget)
+				-- IMPORTANT PATCH: hit only when arrived/locked
+				local arrived = EnsureAtPart(lockedTarget)
 
-				local rockModel = lockedTarget:FindFirstAncestorOfClass("Model")
-				if rockModel then
-					local hp = rockModel:GetAttribute("Health")
-					if (not hp) or hp > 0 then
-						HitPickaxe()
+				if arrived then
+					local rockModel = lockedTarget:FindFirstAncestorOfClass("Model")
+					if rockModel then
+						local hp = rockModel:GetAttribute("Health")
+						if (not hp) or hp > 0 then
+							HitPickaxe()
+						end
 					end
 				end
 			else
@@ -1046,7 +1024,7 @@ function M.Start(Settings, DATA)
 		FullCleanup()
 	end)
 
-	print("[✓] Forge Core OPT+ Loaded! (Non-blocking tween + Debounced ore + Squared dist + UltraLight Camera)")
+	print("[✓] Forge Core OPT+ Loaded! (Tween->lockCF + HitOnlyWhenArrived + UltraLight Camera)")
 end
 
 return M
