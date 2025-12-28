@@ -1,6 +1,12 @@
 -- ReplicatedStorage/ForgeCore (ModuleScript)
 -- OPT+ : non-blocking tween, ore cache-safe validation, squared distance, debounced ore refresh,
 --        throttled remote resolve, cleanup-on-transition (tanpa ubah logic)
+--
+-- CAMERA REVISI (ULTRA LIGHT):
+-- - Tidak pakai Humanoid.CameraOffset
+-- - Tidak ubah CameraType/CameraSubject
+-- - Hanya smoothing ringan CurrentCamera.CFrame setelah CameraScript
+-- - Kamera tetap “default roblox”, tapi guncangan high-frequency berkurang
 
 local M = {}
 
@@ -13,7 +19,7 @@ function M.Start(Settings, DATA)
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 	local Player = Players.LocalPlayer
-	local CAMERA_BIND_NAME = "Forge_CameraFollow_Optim" -- compatibility
+	local CAMERA_BIND_NAME = "Forge_CameraFollow_Optim" -- compatibility (nama sama biar tidak bentrok)
 
 	-- ========= DEBUG =========
 	_G.ForgeDebug = (_G.ForgeDebug ~= nil) and _G.ForgeDebug or false
@@ -144,101 +150,86 @@ function M.Start(Settings, DATA)
 		cacheCharacterParts(c)
 	end)
 
-	-- ========= CAMERA (CameraOffset LERP) =========
-	local prevCamType = nil
-	local prevHumCamOffset = nil
-	local cameraApplied = false
-	local cameraRestoring = false
-	local camOffsetGoal = nil
+	-- ========= CAMERA (ULTRA LIGHT NO-SHAKE, DEFAULT ROBLOX) =========
+	-- Catatan:
+	-- - Tidak ubah CameraType/Subject
+	-- - Tidak sentuh Humanoid.CameraOffset
+	-- - Post-process smoothing CFrame setelah CameraScript (Camera priority + 1)
+	-- - Sangat ringan: 1x Lerp per frame + snap saat teleport/jauh
+	local camRunning = false
+	local camOutCF = nil
 
-	local function bindCameraOffsetLerp()
-		pcall(function()
-			RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
-		end)
+	local function camClamp(x, a, b)
+		if x < a then return a end
+		if x > b then return b end
+		return x
+	end
 
-		RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function()
-			local hum = GetHumanoid()
-			if not hum then
-				pcall(function()
-					RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
-				end)
-				camOffsetGoal = nil
-				cameraApplied = false
-				cameraRestoring = false
-				prevHumCamOffset = nil
-				prevCamType = nil
-				return
-			end
-
-			if not camOffsetGoal then return end
-
-			local alpha = Settings.CameraOffsetLerpAlpha
-			if type(alpha) ~= "number" then alpha = 0.15 end
-			alpha = clamp01(alpha)
-
-			hum.CameraOffset = hum.CameraOffset:Lerp(camOffsetGoal, alpha)
-
-			if cameraRestoring then
-				local diff = (hum.CameraOffset - camOffsetGoal).Magnitude
-				local eps = Settings.CameraOffsetRestoreEps
-				if type(eps) ~= "number" then eps = 0.05 end
-
-				if diff <= eps then
-					hum.CameraOffset = camOffsetGoal
-					pcall(function()
-						RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
-					end)
-
-					camOffsetGoal = nil
-					cameraRestoring = false
-					cameraApplied = false
-					prevHumCamOffset = nil
-					prevCamType = nil
-				end
-			end
-		end)
+	local function camAlpha(dt, smoothTime)
+		-- exponential smoothing (stabil & ringan)
+		if smoothTime <= 0 then return 1 end
+		return 1 - math.exp(-dt / smoothTime)
 	end
 
 	local function StopCameraStabilize()
-		if not cameraApplied then
+		if not camRunning then
 			pcall(function()
 				RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
 			end)
-			camOffsetGoal = nil
-			cameraRestoring = false
+			camOutCF = nil
 			return
 		end
 
-		local cam = Workspace.CurrentCamera
-		if cam and prevCamType then
-			cam.CameraType = prevCamType
-		end
-
-		camOffsetGoal = prevHumCamOffset or Vector3.zero
-		cameraRestoring = true
-		bindCameraOffsetLerp()
+		camRunning = false
+		pcall(function()
+			RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
+		end)
+		camOutCF = nil
 	end
 
 	local function StartCameraStabilize()
+		-- Tetap hormati flag Settings.CameraStabilize (biar kompatibel sama UI/script kamu)
+		-- Kalau false: matikan smoothing kamera
 		if not Settings.CameraStabilize then
 			StopCameraStabilize()
 			return
 		end
 
+		if camRunning then return end
+		camRunning = true
+
 		local cam = Workspace.CurrentCamera
-		local hum = GetHumanoid()
-		if not (cam and hum) then return end
+		camOutCF = cam and cam.CFrame or nil
 
-		if not cameraApplied then
-			prevCamType = cam.CameraType
-			prevHumCamOffset = hum.CameraOffset
-			cameraApplied = true
-		end
+		pcall(function()
+			RunService:UnbindFromRenderStep(CAMERA_BIND_NAME)
+		end)
 
-		cameraRestoring = false
-		cam.CameraType = Enum.CameraType.Custom
-		camOffsetGoal = Settings.CameraOffset or Vector3.new(0, 10, 18)
-		bindCameraOffsetLerp()
+		RunService:BindToRenderStep(CAMERA_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, function(dt)
+			if not camRunning then return end
+
+			local camera = Workspace.CurrentCamera
+			if not camera then return end
+
+			-- tuning paling ringan (bisa kamu ubah dari Settings kalau mau)
+			local smoothTime = tonumber(Settings.CameraSmoothTime) or 0.07  -- kecil = lebih default
+			local snapDist = tonumber(Settings.CameraSnapDistance) or 8     -- teleport/jauh => snap
+
+			-- clamp dt supaya tidak jitter kalau fps drop/spike
+			dt = camClamp(dt, 1/240, 1/30)
+
+			local target = camera.CFrame
+			local out = camOutCF or target
+
+			if (target.Position - out.Position).Magnitude > snapDist then
+				out = target
+			else
+				out = out:Lerp(target, camAlpha(dt, smoothTime))
+			end
+
+			camera.CFrame = out
+			camOutCF = out
+		end)
 	end
 
 	-- ========= TOOL REMOTE (throttled resolve attempts) =========
@@ -396,7 +387,6 @@ function M.Start(Settings, DATA)
 		return select(1, boolCount(Settings.Ores))
 	end
 
-	-- anySelected di-pass biar tidak boolCount berulang
 	local function RockMatchesOreSelection(rockModel, oreTypes, anySelected)
 		if anySelected == nil then
 			anySelected = AnyOreSelected()
@@ -449,7 +439,6 @@ function M.Start(Settings, DATA)
 	end
 
 	local function scheduleOreRefresh(rockModel, entry)
-		-- debounce: hanya 1 refresh dalam window kecil
 		if entry._oreRefreshQueued then return end
 		entry._oreRefreshQueued = true
 		task.delay(0.05, function()
@@ -466,7 +455,6 @@ function M.Start(Settings, DATA)
 			scheduleOreRefresh(rockModel, entry)
 		end))
 
-		-- watch descendants but refresh debounced (lebih murah daripada rebind+GetDescendants tiap event)
 		table.insert(entry._oreConns, rockModel.DescendantAdded:Connect(function(inst)
 			if inst and inst.Name == "Ore" then
 				scheduleOreRefresh(rockModel, entry)
@@ -478,7 +466,6 @@ function M.Start(Settings, DATA)
 			end
 		end))
 
-		-- initial snapshot
 		entry.oreTypes = GetOreTypes(rockModel)
 	end
 
@@ -503,8 +490,6 @@ function M.Start(Settings, DATA)
 		RockIndex.byModel[model] = entry
 		table.insert(RockIndex.entries, entry)
 
-		-- children change can affect ore graph; just schedule refresh (debounced)
-		-- (kita tetap bind watchers agar cache update jalan)
 		table.insert(entry._oreConns, model.ChildAdded:Connect(function()
 			scheduleOreRefresh(model, entry)
 		end))
@@ -902,7 +887,6 @@ function M.Start(Settings, DATA)
 		local sameSpeed = (lastTweenSpeedUsed == speed)
 		local sameGoal = (lastGoalPos ~= nil) and ((lastGoalPos - targetPos).Magnitude < 0.05)
 
-		-- jika tween masih relevan, cukup noclip dan biarkan tween jalan (non-blocking)
 		if activeTween and sameTarget and sameSpeed and sameGoal then
 			enableNoclip()
 			return false
@@ -930,7 +914,6 @@ function M.Start(Settings, DATA)
 		)
 
 		activeTween.Completed:Connect(function()
-			-- pastikan ini tween terbaru dan state masih cocok
 			if myToken ~= tweenToken then return end
 			activeTween = nil
 
@@ -999,7 +982,6 @@ function M.Start(Settings, DATA)
 
 			local now = os.clock()
 
-			-- validate lockedTarget (ore check pakai cache jika ada)
 			local targetInvalid = (not lockedTarget) or (not lockedTarget.Parent)
 			if not targetInvalid then
 				local rockModel = lockedTarget:FindFirstAncestorOfClass("Model")
@@ -1033,7 +1015,6 @@ function M.Start(Settings, DATA)
 				lastGoalPos = nil
 			end
 
-			-- stick / scan
 			if not (lockedTarget and now < lockedUntil) then
 				if (now - lastScan) >= (Settings.ScanInterval or 0.12) then
 					lastScan = now
@@ -1054,7 +1035,6 @@ function M.Start(Settings, DATA)
 					end
 				end
 			else
-				-- idle: jangan spam cleanup berat; cukup state lock/cam/noclip
 				CancelTween()
 				StopCameraStabilize()
 				StopLock()
@@ -1066,7 +1046,7 @@ function M.Start(Settings, DATA)
 		FullCleanup()
 	end)
 
-	print("[✓] Forge Core OPT+ Loaded! (Non-blocking tween + Debounced ore + Squared dist)")
+	print("[✓] Forge Core OPT+ Loaded! (Non-blocking tween + Debounced ore + Squared dist + UltraLight Camera)")
 end
 
 return M
